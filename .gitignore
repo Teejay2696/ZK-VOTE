@@ -10,11 +10,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment variables
-.env
-.env.local
 .env.*.local
-.env.production
-.env.staging
 
 # Circom / ZK
 circuits/*.r1cs
@@ -37,7 +33,6 @@ circuits/build/proof_soroban_be.json
 *.dll
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -82,3 +77,7 @@ frontend/coverage/
 # Proxy list
 Webshare 250 proxies.txt
 target
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat
