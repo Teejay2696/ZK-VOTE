@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "relayer": "tsx src/index.ts",
-    "dev:relayer": "tsx watch src/index.ts",
-    "build": "tsc",
+    "dev:relayer": "node init && tsx watch src/index.ts",
+    "build": "node init && tsc",
     "lint": "eslint . && tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "format:check": "prettier --check \"src/**/*.ts\"",
@@ -14,7 +14,6 @@
     "test": "RELAYER_TEST_MODE=true tsx --test --test-force-exit --test-concurrency=1 'test/*.test.js' 'test/*.test.ts' 'tests/*.test.ts'",
     "test:coverage": "RELAYER_TEST_MODE=true node --import tsx --test --test-force-exit --test-concurrency=1 --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test-coverage-exclude='test/**' --test-coverage-lines=80 'test/*.test.js' 'test/*.test.ts' 'tests/*.test.ts'",
     "validate-profiles": "tsx scripts/validate-profiles.ts",
-
     "migrate:up": "tsx src/services/migrate.ts up",
     "migrate:down": "tsx src/services/migrate.ts down",
     "migrate:status": "tsx src/services/migrate.ts status",
