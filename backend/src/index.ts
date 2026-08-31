@@ -180,13 +180,14 @@ const configuredCorsOrigins = config.corsOrigins
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-if (isProduction && configuredCorsOrigins.includes("*")) {
+if (isProduction && configuredCorsOrigins.some((origin) => origin.includes("*"))) {
   throw new Error(
     "CORS_ORIGIN must be a comma-separated list of exact origins in production; '*' is not allowed.",
   );
 }
 
 const allowedCorsOrigins = new Set(configuredCorsOrigins);
+const allowAllOrigins = !isProduction && configuredCorsOrigins.includes("*");
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
@@ -195,7 +196,7 @@ const corsOptions: cors.CorsOptions = {
       callback(null, true);
       return;
     }
-    if (allowedCorsOrigins.has(origin) || allowedCorsOrigins.has("*")) {
+    if (allowedCorsOrigins.has(origin) || allowAllOrigins) {
       callback(null, true);
       return;
     }
