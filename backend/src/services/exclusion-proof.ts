@@ -9,8 +9,15 @@
 import { getDb } from "./db.js";
 import { log } from "./logger.js";
 
-export interface ExclusionProof {
-  proof: unknown;
+export interface Proof {
+  pi_a: string[];
+  pi_b: string[][];
+  pi_c: string[];
+  protocol?: string;
+  curve?: string;
+}
+
+export interface ExclusionProof extends Proof {
   publicInputs: {
     historicalRoot: string;
     currentRoot: string;
@@ -121,15 +128,14 @@ async function checkRevocationStatus(
   daoId: number,
   _treeContractId: string,
 ): Promise<RevocationStatus> {
-  const db = deps().getDb();
+  const db = getDb() as any;
 
-  const revocationRecord = db
-    .prepare(
-      "SELECT * FROM member_revocations WHERE commitment = ? AND dao_id = ? LIMIT 1",
-    )
-    .get(commitment, daoId) as
-    | { revoked_at: number; reinstated_at: number | null }
-    | undefined;
+  const revocationRecord = await db
+    .selectFrom("member_revocations")
+    .where("commitment", "==", commitment)
+    .where("dao_id", "==", daoId)
+    .selectAll()
+    .executeTakeFirst();
 
   if (!revocationRecord) {
     return {
@@ -161,17 +167,21 @@ export async function recordRevocation(
   daoId: number,
   timestamp: number,
 ): Promise<void> {
-  const db = deps().getDb();
+  const db = getDb() as any;
 
-  try {
-    db.prepare(
-      `INSERT INTO member_revocations (commitment, dao_id, revoked_at, created_at)
-       VALUES (?, ?, ?, ?)`,
-    ).run(commitment, daoId, timestamp, new Date().toISOString());
-  } catch (err) {
-    log("error", "revocation_record_failed", {
-      commitment: commitment.slice(0, 10),
-      error: (err as Error).message,
+  await db.insertInto("member_revocations")
+    .values({
+      commitment,
+      dao_id: daoId,
+      revoked_at: timestamp,
+      created_at: new Date().toISOString(),
+    })
+    .executeTakeFirst()
+    .catch((err: Error) => {
+      log("error", "revocation_record_failed", {
+        commitment: commitment.slice(0, 10),
+        error: err.message,
+      });
     });
   }
 }
@@ -181,16 +191,18 @@ export async function recordReinstatement(
   daoId: number,
   timestamp: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = getDb() as any;
 
-  try {
-    db.prepare(
-      "UPDATE member_revocations SET reinstated_at = ? WHERE commitment = ? AND dao_id = ?",
-    ).run(timestamp, commitment, daoId);
-  } catch (err) {
-    log("error", "reinstatement_record_failed", {
-      commitment: commitment.slice(0, 10),
-      error: (err as Error).message,
+  await db.updateTable("member_revocations")
+    .set({ reinstated_at: timestamp })
+    .where("commitment", "==", commitment)
+    .where("dao_id", "==", daoId)
+    .executeTakeFirst()
+    .catch((err: Error) => {
+      log("error", "reinstatement_record_failed", {
+        commitment: commitment.slice(0, 10),
+        error: err.message,
+      });
     });
   }
 }

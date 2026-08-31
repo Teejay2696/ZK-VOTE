@@ -704,7 +704,7 @@ export async function generateCommentProof(
 ): Promise<GeneratedProof> {
   try {
     const circuitVersion = input.circuitVersion ?? "v1";
-    let circuitInput: Record<string, unknown>;
+    let circuitInput: CircuitSignals;
 
     if (circuitVersion === "v2") {
       // comment_v2.circom - adds parentCommentId as 7th public signal

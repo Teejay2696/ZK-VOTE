@@ -7,7 +7,7 @@ members = [
     "contracts/membership-tree",
     "contracts/voting",
     "contracts/comments",
-    "contracts/poc-bls12-381",
+    "contracts/rewards",
     "contracts/bridge/soroban",
     "contracts/circuit-registry",
     "contracts/poc-bls12-381",
@@ -31,6 +31,7 @@ default-members = [
     "contracts/comments",
     "contracts/bridge/soroban",
     "contracts/circuit-registry",
+    "contracts/rewards",
 ]
 resolver = "2"
 

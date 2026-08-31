@@ -10,14 +10,11 @@ import cluster from "node:cluster";
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
-import swaggerUi from "swagger-ui-express";
 
-// Configuration and types
 import { config, validateEnv, isValidContractId } from "./config.js";
 // Composition root (#358) — explicit construction/wiring of service deps.
 import { buildAppServices } from "./composition-root.js";
 
-// Cluster Service
 import {
   startClusterMaster,
   initWorkerIpc,
@@ -26,7 +23,6 @@ import {
   registerWorkerShutdownHandler,
 } from "./services/cluster.js";
 
-// Services
 import { log, logger } from "./services/logger.js";
 import * as ipfsService from "./services/ipfs.js";
 import { initPinManager } from "./services/ipfs-pin-manager.js";
@@ -69,10 +65,7 @@ import {
   startMemoryMonitor,
   stopMemoryMonitor,
 } from "./services/memory-monitor.js";
-import { closeDb } from "./services/db.js";
-import { ServiceSupervisor } from "./services/supervisor.js";
 
-// Middleware
 import {
   csrfGuard,
   requestLogger,
@@ -82,7 +75,6 @@ import {
   degradationContext,
 } from "./middleware/index.js";
 
-// Routes
 import {
   healthRoutes,
   initHealthRoutes,
@@ -98,13 +90,7 @@ import {
   circuitRoutes,
   metricsRoutes,
   remediationRoutes,
-  adminRoutes,
-  registerShutdownHandler,
 } from "./routes/index.js";
-import metricsRoutes from "./routes/metrics.js";
-import remediationRoutes from "./routes/remediation.js";
-import { registerShutdownHandler } from "./routes/admin.js";
-import openApiSpec from "./openapi.js";
 
 // ============================================
 // ENVIRONMENT VALIDATION
@@ -343,8 +329,8 @@ async function gracefulShutdown(reason: string): Promise<void> {
   });
 
   await httpClosed;
+
   const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
-  closeDb();
 
   clearTimeout(forceExitTimer);
   log("info", "shutdown_complete", {
@@ -687,7 +673,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     registerWorkerShutdownHandler((reason) => {
       void gracefulShutdown(reason);
     });
-    registerShutdownHandler(gracefulShutdown);
 
     process.on("SIGTERM", () => {
       void gracefulShutdown("SIGTERM");

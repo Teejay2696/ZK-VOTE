@@ -514,14 +514,13 @@ export const config = {
   tokenAuditLogEnabled: validatedEnv.TOKEN_AUDIT_LOG_ENABLED,
 
   // Contract IDs
-  votingContractId: process.env.VOTING_CONTRACT_ID,
-  treeContractId: process.env.TREE_CONTRACT_ID,
-  commentsContractId: process.env.COMMENTS_CONTRACT_ID,
-  daoRegistryContractId: process.env.DAO_REGISTRY_CONTRACT_ID,
-  membershipSbtContractId: process.env.MEMBERSHIP_SBT_CONTRACT_ID,
-  rewardsContractId: validatedEnv.REWARDS_CONTRACT_ID,
-  bridgeContractId: process.env.BRIDGE_CONTRACT_ID,
-  circuitRegistryContractId: process.env.CIRCUIT_REGISTRY_CONTRACT_ID,
+  votingContractId: validatedEnv.VOTING_CONTRACT_ID,
+  treeContractId: validatedEnv.TREE_CONTRACT_ID,
+  commentsContractId: validatedEnv.COMMENTS_CONTRACT_ID,
+  daoRegistryContractId: validatedEnv.DAO_REGISTRY_CONTRACT_ID,
+  membershipSbtContractId: validatedEnv.MEMBERSHIP_SBT_CONTRACT_ID,
+  bridgeContractId: validatedEnv.BRIDGE_CONTRACT_ID,
+  circuitRegistryContractId: validatedEnv.CIRCUIT_REGISTRY_CONTRACT_ID,
   rewardsContractId: validatedEnv.REWARDS_CONTRACT_ID,
 
   // VK Version
@@ -780,14 +779,12 @@ export function validateEnv(): void {
     );
   }
 
-  const criticalKeys = [
-    "VOTING_CONTRACT_ID",
-    "TREE_CONTRACT_ID",
-    "RELAYER_SECRET_KEY",
-    "RELAYER_AUTH_TOKEN",
+  const criticalKeys = ["VOTING_CONTRACT_ID", "TREE_CONTRACT_ID", "RELAYER_SECRET_KEY", "RELAYER_AUTH_TOKEN"];
+  const missing: string[] = [
+    ...errors.map((e) => e.split(" ")[0]).filter((k) => typeof k === "string"),
   ];
-  const criticalMissing = missing.filter((k) => criticalKeys.includes(k));
-  const nonCriticalMissing = missing.filter((k) => !criticalKeys.includes(k));
+  const criticalMissing = missing.filter((k: string) => criticalKeys.includes(k));
+  const nonCriticalMissing = missing.filter((k: string) => !criticalKeys.includes(k));
 
   if (criticalMissing.length > 0) {
     console.error(
@@ -895,6 +892,18 @@ export function validateEnv(): void {
         event: "invalid_contract_id",
         var: "COMMENTS_CONTRACT_ID",
         value: config.commentsContractId,
+      }),
+    );
+    process.exit(1);
+  }
+
+  if (config.rewardsContractId && !isValidContractId(config.rewardsContractId)) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "invalid_contract_id",
+        var: "REWARDS_CONTRACT_ID",
+        value: config.rewardsContractId,
       }),
     );
     process.exit(1);

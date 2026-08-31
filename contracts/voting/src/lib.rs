@@ -116,14 +116,125 @@ pub enum VotingError {
     WeightOutOfRange = 27,
     /// Invalid domain tag
     InvalidDomainTag = 28,
-    /// VK proposal pending for this DAO
-    VkProposalPending = 29,
-    /// Circuit registry VK proposal not found
-    VkProposalNotFound = 30,
-    /// VK proposal timelock not elapsed
-    VkProposalTimelockNotElapsed = 31,
-    /// VK proposal quorum not met
-    VkProposalQuorumNotMet = 32,
+
+    /// ── Additional variants referenced elsewhere in the crate ────────
+    NotGuardian = 40,
+    ContractPaused = 41,
+    UpgradeVersionMismatch = 42,
+    StorageVersionDowngrade = 43,
+    UpgradePayloadTooLarge = 44,
+    TallyOverflow = 45,
+    RecursiveProofInvalid = 46,
+    ReentrantCall = 47,
+    NotQuadraticProposal = 48,
+    InvalidCandidateIndex = 49,
+
+    /// ── Coarse error codes (100–106) ──────────────────────────────────
+    /// Collapsed categories for anonymous-submission production paths.
+    /// Admin and test contexts continue to return the specific fine-grained
+    /// discriminants above.  See [`VotingError::to_coarse`].
+    InvalidInput = 100,
+    EligibilityFailed = 101,
+    ProofInvalid = 102,
+    AlreadySubmitted = 103,
+    WindowClosed = 104,
+    InsufficientFunds = 105,
+    ConfigError = 106,
+}
+
+/// Re-exported path-context flag from the shared Groth16 crate so downstream
+/// callers inside voting only need one import.
+pub use zkvote_groth16::PathContext;
+
+impl VotingError {
+    /// Collapse fine-grained discriminants into one of the seven stable
+    /// coarse categories (codes 100–106) when `ctx` is
+    /// [`PathContext::Anonymous`].  [`PathContext::Admin`] returns the
+    /// original value unchanged so administrative tooling and tests keep
+    /// full diagnostic granularity.
+    ///
+    /// The mapping is intentionally surjective: many distinct internal
+    /// failures collapse into the same coarse bucket so a curious relayer
+    /// cannot fingerprint a submission by observing which validation step
+    /// tripped.
+    pub fn to_coarse(&self, ctx: PathContext) -> VotingError {
+        match ctx {
+            PathContext::Admin => *self,
+            PathContext::Anonymous => match self {
+                // ── Input / field / range failures → InvalidInput (100) ──
+                VotingError::SignalNotInField
+                | VotingError::InvalidNullifier
+                | VotingError::InvalidG1Point
+                | VotingError::WeightOutOfRange
+                | VotingError::InvalidDomainTag
+                | VotingError::NotQuadraticProposal
+                | VotingError::InvalidCandidateIndex => VotingError::InvalidInput,
+
+                // ── Eligibility / root / revocation → EligibilityFailed (101) ──
+                VotingError::CommitmentRevokedAtCreation
+                | VotingError::CommitmentRevokedDuringVoting
+                | VotingError::RootMismatch
+                | VotingError::RootNotInHistory
+                | VotingError::RootPredatesProposal
+                | VotingError::RootPredatesRemoval => VotingError::EligibilityFailed,
+
+                // ── Proof + VK sub-checks → ProofInvalid (102) ──
+                VotingError::InvalidProof
+                | VotingError::VkChanged
+                | VotingError::VkVersionMismatch
+                // Note: VkIcLengthMismatch/VkIcTooLarge fire *only* on
+                // admin set_vk() in practice, but if a caller somehow
+                // exposes them on an anonymous path we collapse anyway:
+                | VotingError::VkIcLengthMismatch
+                | VotingError::VkIcTooLarge => VotingError::ProofInvalid,
+
+                // ── VK not set → pure config error (no user leakage) ──
+                VotingError::VkNotSet => VotingError::ConfigError,
+
+                // ── Double-vote / double-claim → AlreadySubmitted (103) ──
+                VotingError::NullifierUsed => VotingError::AlreadySubmitted,
+
+                // ── Window / global state (non-fingerprinting) ──
+                VotingError::VotingClosed
+                | VotingError::ContractPaused => VotingError::WindowClosed,
+
+                // ── Pass-throughs (already coarse / admin-only / structural) ──
+                VotingError::TallyOverflow
+                | VotingError::RecursiveProofInvalid
+                | VotingError::ReentrantCall
+                | VotingError::NotAdmin
+                | VotingError::Unauthorized
+                | VotingError::TitleTooLong
+                | VotingError::NotDaoMember
+                | VotingError::EndTimeInvalid
+                | VotingError::AlreadyInitialized
+                | VotingError::InvalidState
+                | VotingError::InvalidContentCid
+                | VotingError::OnlyAdminCanPropose
+                | VotingError::NotGuardian
+                | VotingError::UpgradeVersionMismatch
+                | VotingError::StorageVersionDowngrade
+                | VotingError::UpgradePayloadTooLarge => *self,
+
+                // Already-coarse variants are idempotent.
+                VotingError::InvalidInput
+                | VotingError::EligibilityFailed
+                | VotingError::ProofInvalid
+                | VotingError::AlreadySubmitted
+                | VotingError::WindowClosed
+                | VotingError::InsufficientFunds
+                | VotingError::ConfigError => *self,
+            },
+        }
+    }
+}
+
+/// Panic with a coarse version of `err` when the submission context is
+/// anonymous, otherwise panic with the specific error.  Shorthand for
+/// `panic_with_error!(env, err.to_coarse(ctx))`.
+#[inline]
+fn panic_coarse(env: &Env, ctx: PathContext, err: VotingError) {
+    panic_with_error!(env, err.to_coarse(ctx));
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -1082,18 +1193,19 @@ impl Voting {
         paused && env.ledger().timestamp() < paused_at.saturating_add(MAX_PAUSE_DURATION)
     }
 
-    /// Validate that a U256 value is within the BN254 scalar field (< r)
-    /// Panics with VotingError::SignalNotInField if value >= r
-    fn assert_in_field(env: &Env, value: &U256) {
+    /// Validate that a U256 value is within the BN254 scalar field (< r).
+    /// Panics with a coarse-mapped [`VotingError::SignalNotInField`] under
+    /// [`PathContext::Anonymous`].
+    fn assert_in_field(env: &Env, ctx: PathContext, value: &U256) {
         if zkvote_groth16::assert_in_field(env, value).is_err() {
-            panic_with_error!(env, VotingError::SignalNotInField);
+            panic_coarse(env, ctx, VotingError::SignalNotInField);
         }
     }
 
-    /// Validate that a U256 value is within the BLS12-381 scalar field
-    fn assert_in_field_bls381(env: &Env, value: &U256) {
+    /// Validate that a U256 value is within the BLS12-381 scalar field.
+    fn assert_in_field_bls381(env: &Env, ctx: PathContext, value: &U256) {
         if zkvote_groth16::assert_in_field_bls381(env, value).is_err() {
-            panic_with_error!(env, VotingError::SignalNotInField);
+            panic_coarse(env, ctx, VotingError::SignalNotInField);
         }
     }
 
@@ -1407,15 +1519,15 @@ impl Voting {
         new_version
     }
 
-    fn assert_weight_in_range(env: &Env, weight: u32) {
+    fn assert_weight_in_range(env: &Env, ctx: PathContext, weight: u32) {
         if weight < MIN_WEIGHT || weight > MAX_WEIGHT {
-            panic_with_error!(env, VotingError::WeightOutOfRange);
+            panic_coarse(env, ctx, VotingError::WeightOutOfRange);
         }
     }
 
-    fn assert_domain_tag_valid(env: &Env, domain_tag: u32) {
+    fn assert_domain_tag_valid(env: &Env, ctx: PathContext, domain_tag: u32) {
         if domain_tag != DOMAIN_TAG_WEIGHTED {
-            panic_with_error!(env, VotingError::InvalidDomainTag);
+            panic_coarse(env, ctx, VotingError::InvalidDomainTag);
         }
     }
 
@@ -1841,25 +1953,27 @@ impl Voting {
         Self::bump_instance(&env);
         Self::require_not_paused(&env);
 
+        let ctx = PathContext::Anonymous;
+
         // ── DEFENSE-IN-DEPTH: Set reentrancy lock BEFORE any state mutations ──
         Self::set_reentrancy_lock(&env);
 
         // SECURITY: Validate public signals are within BN254 scalar field FIRST
         // This prevents modular reduction attacks where values >= r verify identically
         // to their reduced equivalents but are stored as different keys.
-        Self::assert_in_field(&env, &nullifier);
-        Self::assert_in_field(&env, &root);
+        Self::assert_in_field(&env, ctx, &nullifier);
+        Self::assert_in_field(&env, ctx, &root);
 
         // Check nullifier is non-zero (zero is not a valid nullifier)
         if nullifier == U256::from_u32(&env, 0) {
-            panic_with_error!(&env, VotingError::InvalidNullifier);
+            panic_coarse(&env, ctx, VotingError::InvalidNullifier);
         }
 
         // Check nullifier hasn't been used for THIS election (dao_id, proposal_id).
         // Election-scoped storage prevents cross-election DoS from a flat namespace (#64).
         let null_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
-        if env.storage().temporary().has(&null_key) {
-            panic_with_error!(&env, VotingError::NullifierUsed);
+        if env.storage().persistent().has(&null_key) {
+            panic_coarse(&env, ctx, VotingError::NullifierUsed);
         }
 
         // Get proposal
@@ -1874,10 +1988,10 @@ impl Voting {
         // If end_time is 0, there's no deadline (voting never closes)
         let now = env.ledger().timestamp();
         if proposal.state != ProposalState::Active {
-            panic_with_error!(&env, VotingError::VotingClosed);
+            panic_coarse(&env, ctx, VotingError::VotingClosed);
         }
         if proposal.end_time != 0 && now > proposal.end_time {
-            panic_with_error!(&env, VotingError::VotingClosed);
+            panic_coarse(&env, ctx, VotingError::VotingClosed);
         }
 
         // Revocation is now enforced by zeroing leaves in the Merkle tree.
@@ -1898,7 +2012,7 @@ impl Voting {
                 // Fixed mode: root must exactly match the snapshot at proposal creation
                 // This prevents sybil attacks where members are added after proposal creation
                 if root != proposal.eligible_root {
-                    panic_with_error!(&env, VotingError::RootMismatch);
+                    panic_coarse(&env, ctx, VotingError::RootMismatch);
                 }
             }
             VoteMode::Trailing => {
@@ -1916,7 +2030,7 @@ impl Voting {
                     soroban_sdk::vec![&env, dao_id.into_val(&env), root.clone().into_val(&env)],
                 );
                 if !root_valid {
-                    panic_with_error!(&env, VotingError::RootNotInHistory);
+                    panic_coarse(&env, ctx, VotingError::RootNotInHistory);
                 }
 
                 // Check root index >= earliest_root_index (prevents using roots from before proposal)
@@ -1926,7 +2040,7 @@ impl Voting {
                     soroban_sdk::vec![&env, dao_id.into_val(&env), root.clone().into_val(&env)],
                 );
                 if root_index < proposal.earliest_root_index {
-                    panic_with_error!(&env, VotingError::RootPredatesProposal);
+                    panic_coarse(&env, ctx, VotingError::RootPredatesProposal);
                 }
 
                 // Check root index >= min_valid_root_index (prevents using roots from before member removal)
@@ -1937,12 +2051,12 @@ impl Voting {
                     soroban_sdk::vec![&env, dao_id.into_val(&env)],
                 );
                 if root_index < min_valid_root {
-                    panic_with_error!(&env, VotingError::RootPredatesRemoval);
+                    panic_coarse(&env, ctx, VotingError::RootPredatesRemoval);
                 }
             }
             VoteMode::Quadratic => {
                 // Quadratic proposals must be voted on via `cast_qv_vote`.
-                panic_with_error!(&env, VotingError::NotQuadraticProposal);
+                panic_coarse(&env, ctx, VotingError::NotQuadraticProposal);
             }
         }
 
@@ -1954,7 +2068,7 @@ impl Voting {
             .get(&curve_key)
             .unwrap_or(CurveId::Bn254);
         if proposal_curve != CurveId::Bn254 {
-            panic_with_error!(&env, VotingError::VkNotSet);
+            panic_coarse(&env, ctx, VotingError::VkNotSet);
         }
 
         // Get verification key pinned to proposal version
@@ -1964,7 +2078,7 @@ impl Voting {
         // This prevents VK changes from invalidating in-flight votes
         let current_vk_hash = Self::hash_vk(&env, &vk);
         if current_vk_hash != proposal.vk_hash {
-            panic_with_error!(&env, VotingError::VkChanged);
+            panic_coarse(&env, ctx, VotingError::VkChanged);
         }
 
         // Verify Groth16 proof
@@ -2001,7 +2115,7 @@ impl Voting {
         let vote_choice_index: u32 = if vote_choice { 1 } else { 0 };
         if election_config.num_candidates > 0 && vote_choice_index >= election_config.num_candidates
         {
-            panic_with_error!(&env, VotingError::InvalidCandidateIndex);
+            panic_coarse(&env, ctx, VotingError::InvalidCandidateIndex);
         }
 
         let vote_signal = U256::from_u32(&env, vote_choice_index);
@@ -2034,7 +2148,7 @@ impl Voting {
         ];
 
         if !Self::verify_groth16(&env, &vk, &proof, &pub_signals) {
-            panic_with_error!(&env, VotingError::InvalidProof);
+            panic_coarse(&env, ctx, VotingError::InvalidProof);
         }
 
         // Update vote count with checked arithmetic
@@ -2042,12 +2156,12 @@ impl Voting {
             proposal.yes_votes = proposal
                 .yes_votes
                 .checked_add(1)
-                .unwrap_or_else(|| panic_with_error!(&env, VotingError::TallyOverflow));
+                .unwrap_or_else(|| panic_coarse(&env, ctx, VotingError::TallyOverflow));
         } else {
             proposal.no_votes = proposal
                 .no_votes
                 .checked_add(1)
-                .unwrap_or_else(|| panic_with_error!(&env, VotingError::TallyOverflow));
+                .unwrap_or_else(|| panic_coarse(&env, ctx, VotingError::TallyOverflow));
         }
         env.storage().persistent().set(&prop_key, &proposal);
         Self::bump_persistent(&env, &prop_key);
@@ -2080,8 +2194,9 @@ impl Voting {
         domain_tag: u32,
     ) {
         Self::bump_instance(&env);
-        Self::assert_weight_in_range(&env, weight);
-        Self::assert_domain_tag_valid(&env, domain_tag);
+        let ctx = PathContext::Anonymous;
+        Self::assert_weight_in_range(&env, ctx, weight);
+        Self::assert_domain_tag_valid(&env, ctx, domain_tag);
         // Delegate to standard vote after weight validation
         // Note: weight-specific tally (weighted sum) would be stored separately in a full implementation;
         // here we validate bounds and domain, then record as standard vote for e2e testing
