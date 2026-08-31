@@ -189,7 +189,7 @@ export default function VoteModal({
         console.log("Proof input ready, generating proof...");
       }
 
-      const { proof, publicSignals } = await generateVoteProof(
+      const { proof, publicSignals, redundantProof } = await generateVoteProof(
         proofInput,
         wasm,
         zkey,
@@ -216,6 +216,9 @@ export default function VoteModal({
       // Step 5: Format proof for Soroban
       setProgress("Formatting proof...");
       const { proof_a, proof_b, proof_c } = formatProofForSoroban(proof);
+      const formattedRedundantProof = redundantProof
+        ? formatProofForSoroban(redundantProof)
+        : null;
 
       // Step 6: Submit vote through anonymous relay
       setStep("submitting");
@@ -238,6 +241,15 @@ export default function VoteModal({
           b: proof_b,
           c: proof_c,
         },
+        ...(formattedRedundantProof
+          ? {
+              redundantProof: {
+                a: formattedRedundantProof.proof_a,
+                b: formattedRedundantProof.proof_b,
+                c: formattedRedundantProof.proof_c,
+              },
+            }
+          : {}),
         timestamp: Date.now(),
       };
 

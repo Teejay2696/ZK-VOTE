@@ -24,6 +24,7 @@ import {
   sequenceManager,
   u256ToScVal,
   proofToScVal,
+  canonicalProofFingerprint,
   scValToU256Hex,
 } from "../services/stellar.js";
 import {
@@ -64,6 +65,7 @@ import {
 } from "../services/proof-encryption.js";
 import { votesProcessed } from "../services/metrics.js";
 import { sharedSingleFlight } from "../utils/singleflight.js";
+import type { Groth16Proof } from "../types/index.js";
 
 const router = Router();
 
@@ -102,6 +104,75 @@ export function setVoteExecutorForTests(executor: VoteExecutor | null): void {
   }
 
   voteExecutorOverride = executor;
+}
+
+async function alertProofRedundancyMismatch(payload: {
+  daoId: number;
+  proposalId: number;
+  nullifier?: string;
+  durationMs: number;
+}): Promise<void> {
+  log("error", "proof_redundancy_mismatch_detected", payload);
+
+  if (!config.adminAlertWebhookUrl) return;
+
+  try {
+    const response = await fetch(config.adminAlertWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        event: "proof_redundancy_mismatch",
+        severity: "critical",
+        ...payload,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`webhook responded ${response.status}`);
+    }
+  } catch (err) {
+    log("warn", "proof_redundancy_alert_failed", {
+      error: (err as Error).message,
+    });
+  }
+}
+
+async function rejectOnRedundantProofMismatch(input: {
+  daoId: number;
+  proposalId: number;
+  nullifier?: string;
+  proof: unknown;
+  redundantProof?: unknown;
+}): Promise<void> {
+  if (!input.redundantProof) return;
+
+  const started = process.hrtime.bigint();
+  const primary = canonicalProofFingerprint(input.proof as Groth16Proof);
+  const secondary = canonicalProofFingerprint(
+    input.redundantProof as Groth16Proof,
+  );
+  const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+  if (primary === secondary) {
+    log("info", "proof_redundancy_match", {
+      daoId: input.daoId,
+      proposalId: input.proposalId,
+      durationMs,
+    });
+    return;
+  }
+
+  await alertProofRedundancyMismatch({
+    daoId: input.daoId,
+    proposalId: input.proposalId,
+    nullifier: input.nullifier,
+    durationMs,
+  });
+  throw new ApiError(
+    400,
+    ErrorCode.VOTE_REJECTED,
+    "VOTE_REJECTED",
+    "Redundant prover generated a mismatched canonical proof",
+  );
 }
 
 function respondToVoteExecution(
@@ -297,6 +368,7 @@ router.post(
       nullifier,
       root,
       proof,
+      redundantProof,
       nonce,
       timestamp,
       voterPublicKey,
@@ -393,6 +465,14 @@ router.post(
         }
       }
 
+      await rejectOnRedundantProofMismatch({
+        daoId,
+        proposalId,
+        nullifier,
+        proof,
+        redundantProof,
+      });
+
       // Proof freshness validation
       if (timestamp) {
         const now = Date.now();
@@ -486,7 +566,35 @@ router.post(
       }
 
       if (config.testMode) {
-        return res.status(400).json({ error: "Simulation failed (test mode)" });
+        if (!voteExecutorOverride) {
+          return res.status(400).json({
+            error: "Simulation failed (test mode)",
+          });
+        }
+
+        const execution = await voteExecutorOverride({
+          daoId,
+          proposalId,
+          choice,
+          nullifier,
+          root,
+          proof,
+          scNullifier,
+          scRoot,
+          scProof,
+        });
+
+        if (nullifier && execution.sendResult.hash) {
+          recordTransactionLog(nullifier, execution.sendResult.hash, "PENDING");
+        }
+
+        return respondToVoteExecution(
+          res,
+          execution,
+          nullifier,
+          daoId,
+          proposalId,
+        );
       }
 
       // Build contract call

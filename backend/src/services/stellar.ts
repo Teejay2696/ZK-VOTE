@@ -632,6 +632,39 @@ export function canonicalizeProof(
 }
 
 /**
+ * Convert a Groth16 proof into the canonical hex form used for redundancy
+ * checks. This mirrors proofToScVal's validation and A/B malleability
+ * normalization, but returns plain bytes-as-hex so two independently supplied
+ * proofs can be compared before any on-chain submission is attempted.
+ */
+export function canonicalProofFingerprint(proof: Groth16Proof): string {
+  if (!proof || typeof proof !== "object") {
+    throw new Error("Invalid proof: must be an object");
+  }
+  if (!proof.a || !proof.b || !proof.c) {
+    throw new Error("Invalid proof: missing a, b, or c fields");
+  }
+
+  let aBytes = hexToBytes(proof.a, 64);
+  let bBytes = hexToBytes(proof.b, 128);
+  const cBytes = hexToBytes(proof.c, 64);
+
+  if (isAllZeros(aBytes) || isAllZeros(bBytes) || isAllZeros(cBytes)) {
+    throw new Error(
+      "Invalid proof: proof components cannot be point at infinity (all zeros)",
+    );
+  }
+
+  ({ a: aBytes, b: bBytes } = canonicalizeProof(aBytes, bBytes));
+
+  return [
+    aBytes.toString("hex"),
+    bBytes.toString("hex"),
+    cBytes.toString("hex"),
+  ].join(":");
+}
+
+/**
  * Convert Groth16 proof to ScVal
  */
 export function proofToScVal(proof: Groth16Proof): StellarSdk.xdr.ScVal {
