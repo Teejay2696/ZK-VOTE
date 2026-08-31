@@ -135,6 +135,19 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // Logging Sampling
+  LOG_SAMPLING_RATE: z.coerce.number().min(0).max(1).default(0.1),
+  LOG_SAMPLING_ERROR_RATE: z.coerce.number().min(0).max(1).default(1.0),
+  LOG_SAMPLING_SLOW_RATE: z.coerce.number().min(0).max(1).default(1.0),
+  LOG_SLOW_THRESHOLD_MS: z.coerce.number().int().positive().default(1000),
+  LOG_BODY_MAX_CHARS: z.coerce.number().int().positive().default(2000),
+
+  // Hot-Reload
+  HOT_RELOAD_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+
   INDEXER_ENABLED: z
     .enum(["true", "false"])
     .default("true")
@@ -491,6 +504,16 @@ export const config = {
   genericErrors: validatedEnv.RELAYER_GENERIC_ERRORS,
   healthExposeDetails: validatedEnv.HEALTH_EXPOSE_DETAILS,
   healthcheckPing: validatedEnv.HEALTHCHECK_PING,
+
+  // Logging Sampling
+  logSamplingRate: validatedEnv.LOG_SAMPLING_RATE,
+  logSamplingErrorRate: validatedEnv.LOG_SAMPLING_ERROR_RATE,
+  logSamplingSlowRate: validatedEnv.LOG_SAMPLING_SLOW_RATE,
+  logSlowThresholdMs: validatedEnv.LOG_SLOW_THRESHOLD_MS,
+  logBodyMaxChars: validatedEnv.LOG_BODY_MAX_CHARS,
+
+  // Hot-Reload
+  hotReloadEnabled: validatedEnv.HOT_RELOAD_ENABLED,
 
   // Event Indexer
   indexerEnabled: validatedEnv.INDEXER_ENABLED,

@@ -19,6 +19,10 @@ import {
   getCachedDaoCount,
 } from "../services/db.js";
 import { getBackupStatus } from "../services/backup.js";
+import { getLogMetrics } from "../middleware/logging.js";
+import { getWalHealth } from "../services/walResilience.js";
+
+import { checkRotationHealth, getSecretBackend } from "../services/secrets/index.js";
 import { getWalHealth } from "../services/walResilience.js";
 
 import { rpcPoolManager, sequenceManager } from "../services/stellar.js";
@@ -362,6 +366,31 @@ router.get("/config", (_req: Request, res: Response) => {
     rpcUrl: config.rpcUrl,
     ipfsEnabled: config.ipfsEnabled,
     pinataGateway: config.pinataGateway,
+  });
+});
+
+/**
+ * GET /log/metrics
+ * Log volume and sampling metrics (admin only)
+ */
+router.get("/log/metrics", async (req: Request, res: Response) => {
+  if (config.healthExposeDetails) {
+    const token = extractAuthToken(req);
+    if (token !== config.relayerAuthToken) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+  }
+
+  res.json({
+    metrics: getLogMetrics(),
+    config: {
+      samplingRate: config.logSamplingRate,
+      errorRate: config.logSamplingErrorRate,
+      slowRate: config.logSamplingSlowRate,
+      slowThresholdMs: config.logSlowThresholdMs,
+      bodyMaxChars: config.logBodyMaxChars,
+      logRequestBody: config.logRequestBody,
+    },
   });
 });
 

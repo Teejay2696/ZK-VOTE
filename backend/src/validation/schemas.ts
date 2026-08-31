@@ -149,7 +149,17 @@ export const positiveInteger = z
  */
 export const ipfsCid = z.string().refine(
   (val) => {
-    // CIDv0: exact-length base58-encoded Qm... digest.
+    if (!val || typeof val !== "string") return false;
+    const trimmed = val.trim();
+    if (/[/?#\s\0\r\n\t]/.test(trimmed)) return false;
+    // CIDv0: Qm + 44 base58 chars (exact length)
+    if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(trimmed)) return true;
+    // CIDv1: bafy/bafk + base32 content (59+ chars)
+    if ((trimmed.startsWith("bafy") || trimmed.startsWith("bafk")) && trimmed.length >= 59) {
+      const content = trimmed.slice(4);
+      return /^[a-z2-7]+$/.test(content);
+    }
+    // CIDv0: exact-length Bitcoin base58 encoding.
     if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(val)) return true;
     // CIDv1: bafy... or bafk... (59+ chars).
     if ((val.startsWith("bafy") || val.startsWith("bafk")) && val.length >= 59)
