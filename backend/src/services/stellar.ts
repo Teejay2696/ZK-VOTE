@@ -16,6 +16,10 @@ import {
   rpcPoolHealthyEndpoints,
   rpcPoolTotalEndpoints,
   rpcEndpointLatency,
+  sequenceRecoveriesTotal,
+  sequenceMismatchesTotal,
+  sequenceRecoveryDuration,
+  sequenceHealthStatus,
 } from "./metrics.js";
 import {
   registerCircuitBreaker,
@@ -128,12 +132,18 @@ export async function waitForSequenceLockIdle(
 export class SequenceManager {
   private dirty = false;
   private lastKnownSequence: string | null = null;
+  private consecutiveErrors = 0;
+  private lastRecoveryTime = 0;
+  private readonly MAX_CONSECUTIVE_ERRORS = 5;
+  private readonly RECOVERY_COOLDOWN_MS = 5000; // 5 seconds
 
   constructor() {
     const persisted = this.loadPersisted();
     if (persisted) {
       this.lastKnownSequence = persisted;
     }
+    // Initialize health status as healthy
+    sequenceHealthStatus.set(1);
   }
 
   private loadPersisted(): string | null {
@@ -188,9 +198,68 @@ export class SequenceManager {
   handleTxError(errorResult: string): boolean {
     if (errorResult && errorResult.includes("tx_bad_seq")) {
       this.markDirty();
+      sequenceMismatchesTotal.inc();
+      this.consecutiveErrors++;
+      
+      // Update health status based on consecutive errors
+      if (this.consecutiveErrors >= this.MAX_CONSECUTIVE_ERRORS) {
+        sequenceHealthStatus.set(0);
+        log("error", "sequence_health_degraded", {
+          consecutiveErrors: this.consecutiveErrors,
+        });
+      }
+      
       return true;
     }
     return false;
+  }
+
+  /**
+   * Reset error counter and restore health status on successful transaction
+   */
+  markSuccess(): void {
+    if (this.consecutiveErrors > 0) {
+      this.consecutiveErrors = 0;
+      sequenceHealthStatus.set(1);
+    }
+  }
+
+  /**
+   * Check if recovery should be rate limited
+   */
+  shouldRateLimitRecovery(): boolean {
+    const now = Date.now();
+    if (
+      this.consecutiveErrors >= this.MAX_CONSECUTIVE_ERRORS &&
+      now - this.lastRecoveryTime < this.RECOVERY_COOLDOWN_MS
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Update last recovery timestamp
+   */
+  markRecoveryAttempt(): void {
+    this.lastRecoveryTime = Date.now();
+  }
+
+  /**
+   * Get current health status for monitoring
+   */
+  getHealthStatus(): {
+    healthy: boolean;
+    consecutiveErrors: number;
+    lastKnownSequence: string | null;
+    dirty: boolean;
+  } {
+    return {
+      healthy: this.consecutiveErrors < this.MAX_CONSECUTIVE_ERRORS,
+      consecutiveErrors: this.consecutiveErrors,
+      lastKnownSequence: this.lastKnownSequence,
+      dirty: this.dirty,
+    };
   }
 }
 
@@ -704,4 +773,134 @@ export function buildTransaction(
  */
 export function signTransaction(tx: StellarSdk.Transaction): void {
   tx.sign(relayerKeypair as StellarSdk.Keypair);
+}
+
+// ============================================
+// TRANSACTION SUBMISSION WITH SEQUENCE RECOVERY
+// ============================================
+
+export interface TransactionSubmissionResult {
+  status: string;
+  hash?: string;
+  errorResult?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Submit a transaction with automatic sequence number recovery.
+ * 
+ * Automatically detects tx_bad_seq errors and retries with corrected
+ * sequence numbers. Implements rate limiting to prevent recovery storms.
+ * 
+ * @param preparedTx - The prepared and signed transaction
+ * @param operation - A function that rebuilds, simulates, and signs the transaction
+ * @param maxRetries - Maximum number of retry attempts (default: 3)
+ * @param label - Label for logging and timeout tracking
+ * @returns Transaction submission result
+ */
+export async function submitTransactionWithRecovery(
+  preparedTx: StellarSdk.Transaction,
+  operation: () => Promise<StellarSdk.Transaction>,
+  maxRetries = 3,
+  label = "transaction",
+): Promise<TransactionSubmissionResult> {
+  let attempts = 0;
+  let lastError: Error | null = null;
+  const recoveryStart = Date.now();
+
+  while (attempts < maxRetries) {
+    try {
+      // Check if recovery should be rate limited
+      if (attempts > 0 && sequenceManager.shouldRateLimitRecovery()) {
+        log("warn", "sequence_recovery_rate_limited", {
+          consecutiveErrors: sequenceManager.getHealthStatus().consecutiveErrors,
+          attempt: attempts + 1,
+          maxRetries,
+        });
+        throw new Error("SEQUENCE_RECOVERY_RATE_LIMITED");
+      }
+
+      // Submit transaction (use the original preparedTx on first attempt)
+      const txToSubmit = attempts === 0 ? preparedTx : await operation();
+      const sr = await callWithTimeout(
+        () => (server as StellarSdk.rpc.Server).sendTransaction(txToSubmit),
+        `send_${label}`,
+      );
+
+      // Check for sequence error
+      if (sr.status === "ERROR") {
+        const errorResult =
+          typeof (sr as any).errorResult === "string"
+            ? (sr as any).errorResult
+            : JSON.stringify((sr as any).errorResult ?? "");
+
+        const isBadSeq = sequenceManager.handleTxError(errorResult);
+
+        if (isBadSeq && attempts < maxRetries - 1) {
+          attempts++;
+          sequenceManager.markRecoveryAttempt();
+          
+          log("warn", "sequence_recovery_retry", {
+            attempt: attempts,
+            maxRetries,
+            label,
+            errorResult,
+          });
+
+          // Re-fetch sequence and retry
+          await sequenceManager.forceResync(
+            server as StellarSdk.rpc.Server,
+          );
+          
+          sequenceRecoveriesTotal.inc({ status: "retry" });
+          continue;
+        }
+
+        // Non-recoverable error or max retries reached
+        if (isBadSeq) {
+          sequenceRecoveriesTotal.inc({ status: "failed" });
+          log("error", "sequence_recovery_exhausted", {
+            attempts,
+            maxRetries,
+            label,
+          });
+        }
+
+        return sr as TransactionSubmissionResult;
+      }
+
+      // Success!
+      sequenceManager.markSuccess();
+      
+      if (attempts > 0) {
+        const duration = (Date.now() - recoveryStart) / 1000;
+        sequenceRecoveryDuration.observe(duration);
+        sequenceRecoveriesTotal.inc({ status: "success" });
+        
+        log("info", "sequence_recovery_success", {
+          attempts,
+          durationMs: Date.now() - recoveryStart,
+          label,
+        });
+      }
+
+      return sr as TransactionSubmissionResult;
+    } catch (err) {
+      lastError = err as Error;
+      
+      // Don't retry on non-sequence errors
+      if (!(err as Error).message?.includes("tx_bad_seq")) {
+        throw err;
+      }
+      
+      attempts++;
+      if (attempts >= maxRetries) {
+        break;
+      }
+    }
+  }
+
+  // All retries exhausted
+  sequenceRecoveriesTotal.inc({ status: "failed" });
+  throw lastError || new Error("Transaction submission failed after retries");
 }

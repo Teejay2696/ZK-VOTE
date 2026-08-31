@@ -16,7 +16,7 @@ import { getDbDiagnostics, getDbStatus, getDb } from "../services/db.js";
 import { getBackupStatus } from "../services/backup.js";
 import { getWalHealth } from "../services/walResilience.js";
 
-import { rpcPoolManager } from "../services/stellar.js";
+import { rpcPoolManager, sequenceManager } from "../services/stellar.js";
 import { getAllCircuitBreakerMetrics } from "../services/circuit-breaker.js";
 import { getMemorySnapshot } from "../services/memory-monitor.js";
 import {
@@ -491,6 +491,19 @@ router.get("/relay-test", async (req: Request, res: Response) => {
       },
     };
 
+    // Test 6: Sequence Number Health
+    const sequenceHealth = sequenceManager.getHealthStatus();
+    results.tests = {
+      ...(results.tests as Record<string, unknown>),
+      sequence_number: {
+        passed: sequenceHealth.healthy,
+        message: sequenceHealth.healthy
+          ? "Sequence number tracking is healthy"
+          : `Sequence tracking degraded: ${sequenceHealth.consecutiveErrors} consecutive errors`,
+        ...sequenceHealth,
+      },
+    };
+
     // Overall result
     const allTests = Object.values(
       results.tests as Record<string, { passed: boolean }>,
@@ -529,6 +542,44 @@ router.get("/relay-test", async (req: Request, res: Response) => {
       },
       tests: results.tests,
     });
+  }
+});
+
+/**
+ * GET /sequence/health
+ * Sequence number health check endpoint
+ * Returns detailed status of the relayer sequence number tracking
+ */
+router.get("/sequence/health", async (req: Request, res: Response) => {
+  try {
+    const health = sequenceManager.getHealthStatus();
+    const statusCode = health.healthy ? 200 : 503;
+
+    const response = {
+      timestamp: new Date().toISOString(),
+      healthy: health.healthy,
+      consecutiveErrors: health.consecutiveErrors,
+      dirty: health.dirty,
+    };
+
+    // Include detailed info if authenticated
+    if (config.healthExposeDetails) {
+      const token = extractAuthToken(req);
+      if (token === config.relayerAuthToken) {
+        Object.assign(response, {
+          lastKnownSequence: health.lastKnownSequence,
+        });
+      }
+    }
+
+    return res.status(statusCode).json(response);
+  } catch (err) {
+    log("error", "sequence_health_check_failed", {
+      error: (err as Error).message,
+    });
+    return res
+      .status(500)
+      .json({ error: "Failed to check sequence health" });
   }
 });
 

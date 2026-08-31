@@ -352,6 +352,36 @@ export const circuitBreakerTripsTotal = new Counter({
 });
 
 // ============================================
+// SEQUENCE NUMBER METRICS
+// ============================================
+
+export const sequenceRecoveriesTotal = new Counter({
+  name: "zkvote_sequence_recoveries_total",
+  help: "Total number of sequence number recovery attempts",
+  labelNames: ["status"] as const,
+  registers: [register],
+});
+
+export const sequenceMismatchesTotal = new Counter({
+  name: "zkvote_sequence_mismatches_total",
+  help: "Total number of sequence number mismatches detected",
+  registers: [register],
+});
+
+export const sequenceRecoveryDuration = new Histogram({
+  name: "zkvote_sequence_recovery_duration_seconds",
+  help: "Duration of sequence number recovery operations in seconds",
+  buckets: [0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register],
+});
+
+export const sequenceHealthStatus = new Gauge({
+  name: "zkvote_sequence_health_status",
+  help: "Sequence number health status (1=healthy, 0=unhealthy)",
+  registers: [register],
+});
+
+// ============================================
 // MEMORY MONITORING METRICS
 // ============================================
 
