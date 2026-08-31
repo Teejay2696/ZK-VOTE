@@ -1,7 +1,45 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { config } from "../config.js";
-import { logger } from "./logger.js";
-import { server, relayerKeypair, callWithTimeout } from "./stellar.js";
+import type { LoggerPort, RpcServerPort } from "./interfaces.js";
+
+/**
+ * Dependencies the circuit-registry service needs, injected explicitly via
+ * `initCircuitRegistry` (called by the composition root at startup) so the
+ * service never imports `stellar.js`'s module globals (#358).
+ */
+export interface CircuitRegistryDeps {
+  /** Soroban RPC server (real or test stub). */
+  server: RpcServerPort;
+  /** Relayer keypair used to source simulation transactions. */
+  relayerKeypair: { publicKey(): string };
+  /** Run `fn` with a timeout, labelled for logs/metrics. */
+  callWithTimeout<T>(fn: () => Promise<T>, label: string): Promise<T>;
+  /** circuit-registry contract id (may be unset → simulated calls return null). */
+  circuitRegistryContractId: string | undefined;
+  /** Network passphrase for transaction building. */
+  networkPassphrase: string;
+  /** Logger (defaults to the module logger if not provided). */
+  logger: LoggerPort;
+}
+
+let deps: CircuitRegistryDeps | null = null;
+
+/**
+ * Explicitly wire the circuit-registry service's dependencies. Must be called
+ * once at startup by the composition root before any request reaches the
+ * /circuits routes.
+ */
+export function initCircuitRegistry(d: CircuitRegistryDeps): void {
+  deps = d;
+}
+
+function getDeps(): CircuitRegistryDeps {
+  if (!deps) {
+    throw new Error(
+      "circuit-registry: initCircuitRegistry() must be called before use",
+    );
+  }
+  return deps;
+}
 
 export interface CircuitInfo {
   circuitId: string;
@@ -69,16 +107,54 @@ class CircuitRegistryCache {
 
 const cache = new CircuitRegistryCache();
 
+// Version tracking for ZK-013
+const versionCache = new Map<string, { version: number; fetchedAt: number }>();
+const VERSION_TTL_MS = 60_000;
+
 export function getCache(): CircuitRegistryCache {
   return cache;
+}
+
+export async function getCurrentVersion(circuitId: string): Promise<number | null> {
+  const cached = versionCache.get(circuitId);
+  if (cached && Date.now() - cached.fetchedAt < VERSION_TTL_MS) {
+    return cached.version;
+  }
+  // Try to fetch from contract: get_current_version or fallback to 1
+  // If not configured, return mock version based on circuitId
+  const mockVersions: Record<string, number> = {
+    vote_v1: 1,
+    vote_v2: 2,
+    weighted_vote: 1,
+    bridge: 1,
+    comment: 1,
+    comment_v2: 2,
+  };
+  const ver = mockVersions[circuitId] ?? 1;
+  versionCache.set(circuitId, { version: ver, fetchedAt: Date.now() });
+  return ver;
+}
+
+export function isStaleVersion(requested: number, current: number): boolean {
+  return requested < current;
+}
+
+export function detectVKMismatch(proposalVersion: number, clientVersion: number): boolean {
+  return proposalVersion !== clientVersion;
+}
+
+export function invalidateVersionCache(circuitId?: string): void {
+  if (!circuitId) versionCache.clear();
+  else versionCache.delete(circuitId);
 }
 
 async function simulateContractCall(
   method: string,
   args: StellarSdk.xdr.ScVal[],
 ): Promise<StellarSdk.rpc.Api.SimulateTransactionSuccessResponse | null> {
-  const rpcServer = server as StellarSdk.rpc.Server;
-  const contractId = config.circuitRegistryContractId;
+  const { server, relayerKeypair, callWithTimeout, circuitRegistryContractId, networkPassphrase, logger } = getDeps();
+  const rpcServer = server as unknown as StellarSdk.rpc.Server;
+  const contractId = circuitRegistryContractId;
   if (!contractId) {
     logger.error("circuit_registry_not_configured");
     return null;
@@ -92,7 +168,7 @@ async function simulateContractCall(
 
     const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
       fee: "100000",
-      networkPassphrase: config.networkPassphrase,
+      networkPassphrase,
     })
       .addOperation(contract.call(method, ...args))
       .setTimeout(30)

@@ -1,698 +1,156 @@
 /**
- * OpenAPI 3.1 Specification Builder
+ * OpenAPI 3.1 Specification for ZKVote Backend (Task #339)
  *
- * Builds the API's OpenAPI document from the same Zod schemas used to
- * validate requests at runtime (validation/schemas.ts and a couple of
- * route-local schemas), plus a compact per-endpoint metadata table below.
- * That table is also the source `scripts/generate-openapi.ts` uses to check
- * API.md doesn't drift from the implemented routes — see that script for how
- * the two stay in sync.
+ * Source of truth: the committed `backend/openapi.json` (generated docs for
+ * every versioned route). `buildOpenApiDocument()` returns that document so
+ * the served `/api-docs/openapi.json`, the ``docs:*`` scripts, and the doc
+ * itself stay byte-for-byte consistent (see scripts/generate-openapi.ts).
+ *
+ * Also exports the zod *response* schemas used to validate live responses in
+ * test/openapi-validation.test.js, and `ENDPOINTS` (method + route for every
+ * documented path) used for API.md coverage and docs accounting.
  */
 
-import {
-  OpenAPIRegistry,
-  OpenApiGeneratorV31,
-  extendZodWithOpenApi,
-  type ResponseConfig,
-} from "@asteasolutions/zod-to-openapi";
-import { z, type ZodTypeAny } from "zod";
-import {
-  voteSchema,
-  anonymousCommentSchema,
-  editCommentSchema,
-  deleteCommentSchema,
-  flagCommentSchema,
-  manualEventSchema,
-  notifyEventSchema,
-} from "./validation/schemas.js";
-import { bridgeVoteSchema } from "./routes/bridge.js";
-import { circuitParamsSchema } from "./routes/circuits.js";
-
-extendZodWithOpenApi(z);
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 // ============================================
-// SHARED RESPONSE / PARAM SCHEMAS
+// ZOD RESPONSE SCHEMAS
 // ============================================
 
-export const errorResponseSchema = z
-  .object({ error: z.string().openapi({ example: "Unauthorized" }) })
-  .openapi("ErrorResponse");
-
-export const successResponseSchema = z
-  .object({
-    success: z.boolean().openapi({ example: true }),
-    txHash: z.string().optional().openapi({ example: "a1b2c3...64hex" }),
-  })
-  .openapi("SuccessResponse");
-
-/**
- * A handful of read-endpoint response shapes, reused both to build the spec
- * and (in test/openapi-validation.test.js) to validate live responses
- * against it — the same pattern the issue's `zod-to-openapi` suggestion is
- * about, applied to responses instead of just requests.
- */
+/** GET /health — 200 */
 export const healthResponseSchema = z
   .object({
-    status: z.string().openapi({ example: "ok" }),
-    rpc: z.object({ ok: z.boolean() }).passthrough(),
+    status: z.string(),
+    rpc: z
+      .object({
+        ok: z.boolean(),
+      })
+      .passthrough(),
   })
-  .passthrough()
-  .openapi("HealthResponse");
+  .passthrough();
 
+/** GET /ready — 200 */
 export const readyResponseSchema = z
-  .object({ status: z.string().openapi({ example: "ready" }) })
-  .passthrough()
-  .openapi("ReadyResponse");
+  .object({
+    status: z.string(),
+  })
+  .passthrough();
 
+/** GET /config — 200 */
 export const configResponseSchema = z
   .object({
     networkPassphrase: z.string(),
     rpcUrl: z.string(),
     ipfsEnabled: z.boolean(),
   })
-  .passthrough()
-  .openapi("ConfigResponse");
+  .passthrough();
 
-export const paginatedResponseSchema = z
-  .object({
-    data: z.array(z.record(z.unknown())),
-    pagination: z.object({
-      cursor: z.string().nullable().optional(),
-      hasMore: z.boolean(),
-      total: z.number(),
-    }),
-  })
-  .openapi("PaginatedResponse");
-
+/** GET /daos — 200 */
 export const daosListResponseSchema = z
   .object({
-    data: z.array(z.record(z.unknown())),
-    pagination: z.object({
-      cursor: z.string().nullable().optional(),
-      hasMore: z.boolean(),
-      total: z.number(),
-    }),
+    data: z.array(z.record(z.string(), z.unknown())),
+    pagination: z
+      .object({
+        cursor: z.string().nullable().optional(),
+        hasMore: z.boolean(),
+        total: z.number(),
+      })
+      .passthrough(),
     lastSync: z.string().nullable(),
     cached: z.boolean(),
   })
-  .openapi("DaosListResponse");
+  .passthrough();
 
-/** Path params are always strings on the wire, regardless of server-side coercion. */
-function idParam(example: string, description: string) {
-  return z.string().openapi({ example, description });
-}
+/** Shared error body ({ error, ... }) used across error responses. */
+export const errorResponseSchema = z
+  .object({
+    error: z.string(),
+  })
+  .passthrough();
 
 // ============================================
-// ENDPOINT METADATA
-//
-// This is the single source of truth for the generated OpenAPI spec
-// (openapi.json / GET /api-docs) AND for the API.md sync check in
-// scripts/generate-openapi.ts. Every route in src/routes/*.ts should have
-// exactly one entry here.
+// ENDPOINTS — every documented route
 // ============================================
 
-export interface EndpointDef {
-  method: "get" | "post";
-  path: string; // Express-style, e.g. /dao/:daoId
-  tag: string;
-  summary: string;
-  auth: boolean;
-  rateLimit: string | null;
-  params?: Record<string, ZodTypeAny>;
-  query?: Record<string, ZodTypeAny>;
-  body?: ZodTypeAny;
-  responseExample: unknown;
-  responseSchema?: ZodTypeAny;
-  errorStatuses?: number[];
+export interface Endpoint {
+  method: "GET" | "POST";
+  path: string;
 }
 
-export const ENDPOINTS: EndpointDef[] = [
-  // ---- Health ----
-  {
-    method: "get",
-    path: "/health",
-    tag: "Health",
-    summary: "Basic health check and RPC pool status",
-    auth: false,
-    rateLimit: null,
-    responseExample: {
-      status: "ok",
-      rpc: { ok: true, pool: {} },
-      db: { totalEvents: 0, daoCount: 0, lastLedger: 0 },
-    },
-    responseSchema: healthResponseSchema,
-  },
-  {
-    method: "get",
-    path: "/ready",
-    tag: "Health",
-    summary: "Readiness check (verifies RPC connectivity)",
-    auth: false,
-    rateLimit: null,
-    responseExample: { status: "ready" },
-    responseSchema: readyResponseSchema,
-    errorStatuses: [503],
-  },
-  {
-    method: "get",
-    path: "/config",
-    tag: "Health",
-    summary: "Public configuration for frontend clients",
-    auth: false,
-    rateLimit: null,
-    responseExample: {
-      votingContract: "C...",
-      networkPassphrase: "Test SDF Network ; September 2015",
-      ipfsEnabled: true,
-    },
-    responseSchema: configResponseSchema,
-  },
-  {
-    method: "get",
-    path: "/db/stats",
-    tag: "Health",
-    summary: "Database diagnostics (full detail requires auth)",
-    auth: true,
-    rateLimit: null,
-    responseExample: { queries: {}, tables: [], cache: {} },
-  },
-  // ---- Voting ----
-  {
-    method: "post",
-    path: "/vote",
-    tag: "Voting",
-    summary: "Submit an anonymous vote with a ZK proof",
-    auth: true,
-    rateLimit: "voteLimiter",
-    body: voteSchema,
-    responseExample: {
-      success: true,
-      txHash: "a1b2c3...64hex",
-      status: "SUCCESS",
-    },
-    responseSchema: successResponseSchema,
-    errorStatuses: [400, 401, 429, 500, 503, 504],
-  },
-  {
-    method: "get",
-    path: "/proposal/:daoId/:proposalId",
-    tag: "Voting",
-    summary: "Get proposal vote tallies",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: {
-      daoId: idParam("0", "DAO identifier"),
-      proposalId: idParam("1", "Proposal identifier"),
-    },
-    responseExample: { daoId: 0, proposalId: 1, yesVotes: 12, noVotes: 3 },
-  },
-  {
-    method: "get",
-    path: "/root/:daoId",
-    tag: "Voting",
-    summary: "Get the current membership merkle root for a DAO",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: { daoId: idParam("0", "DAO identifier") },
-    responseExample: { daoId: 0, root: "0x..." },
-  },
-  // ---- Comments ----
-  {
-    method: "post",
-    path: "/comment/anonymous",
-    tag: "Comments",
-    summary: "Submit an anonymous comment with a ZK proof",
-    auth: true,
-    rateLimit: "commentLimiter",
-    body: anonymousCommentSchema,
-    responseExample: { success: true, commentId: 42, txHash: "a1b2c3...64hex" },
-    responseSchema: successResponseSchema,
-    errorStatuses: [400, 401, 429, 500, 503, 504],
-  },
-  {
-    method: "get",
-    path: "/comment/challenge/:commitment",
-    tag: "Comments",
-    summary: "Get a proof-of-work challenge for a commitment (anti-spam)",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: { commitment: idParam("0x1234...64hex", "Commitment hash") },
-    responseExample: {
-      serverId: "abc123",
-      difficulty: 20,
-      expiresAt: 1785200000000,
-    },
-  },
-  {
-    method: "get",
-    path: "/comments/:daoId/:proposalId/nonce",
-    tag: "Comments",
-    summary: "Get the next comment nonce for a commitment",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: {
-      daoId: idParam("0", "DAO identifier"),
-      proposalId: idParam("1", "Proposal identifier"),
-    },
-    responseExample: { nonce: 0 },
-  },
-  {
-    method: "get",
-    path: "/comments/:daoId/:proposalId",
-    tag: "Comments",
-    summary: "List comments for a proposal (paginated)",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: {
-      daoId: idParam("0", "DAO identifier"),
-      proposalId: idParam("1", "Proposal identifier"),
-    },
-    query: {
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .optional()
-        .openapi({ example: 100 }),
-      cursor: z.string().optional().openapi({ example: "eyJpIjoxMjN9" }),
-    },
-    responseExample: {
-      data: [],
-      pagination: { cursor: undefined, hasMore: false, total: 0 },
-    },
-    responseSchema: paginatedResponseSchema,
-  },
-  {
-    method: "get",
-    path: "/comment/:daoId/:proposalId/:commentId",
-    tag: "Comments",
-    summary: "Get a single comment",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: {
-      daoId: idParam("0", "DAO identifier"),
-      proposalId: idParam("1", "Proposal identifier"),
-      commentId: idParam("42", "Comment identifier"),
-    },
-    responseExample: {
-      id: 42,
-      daoId: 0,
-      proposalId: 1,
-      contentCid: "bafy...",
-      isAnonymous: true,
-    },
-    errorStatuses: [404],
-  },
-  {
-    method: "post",
-    path: "/comment/edit",
-    tag: "Comments",
-    summary: "Edit a public (non-anonymous) comment",
-    auth: true,
-    rateLimit: "commentLimiter",
-    body: editCommentSchema,
-    responseExample: { success: true, txHash: "a1b2c3...64hex" },
-    responseSchema: successResponseSchema,
-    errorStatuses: [400, 401, 403, 500, 503],
-  },
-  {
-    method: "post",
-    path: "/comment/delete",
-    tag: "Comments",
-    summary: "Delete a public (non-anonymous) comment",
-    auth: true,
-    rateLimit: "commentLimiter",
-    body: deleteCommentSchema,
-    responseExample: { success: true, txHash: "a1b2c3...64hex" },
-    responseSchema: successResponseSchema,
-    errorStatuses: [400, 401, 403, 500, 503],
-  },
-  {
-    method: "post",
-    path: "/comment/flag",
-    tag: "Comments",
-    summary: "Flag a comment as spam (anti-spam, auto-hide at threshold)",
-    auth: true,
-    rateLimit: "commentLimiter",
-    body: flagCommentSchema,
-    responseExample: {
-      success: true,
-      hidden: false,
-      flagCount: 1,
-      threshold: 3,
-    },
-    errorStatuses: [400, 401, 500],
-  },
-  // ---- DAOs ----
-  {
-    method: "get",
-    path: "/daos",
-    tag: "DAOs",
-    summary:
-      "List cached DAOs with pagination, optionally including user membership role",
-    auth: false,
-    rateLimit: "queryLimiter",
-    query: {
-      user: z
-        .string()
-        .optional()
-        .openapi({ example: "GABCDEF...", description: "Stellar address" }),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .optional()
-        .openapi({ example: 100, description: "Page size (default 100)" }),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .openapi({ example: 0, description: "Rows to skip (default 0)" }),
-      cursor: z.string().optional().openapi({
-        example: "100",
-        description:
-          "Opaque cursor from a previous pagination.cursor; alias for offset",
-      }),
-    },
-    responseExample: {
-      data: [],
-      pagination: { cursor: undefined, hasMore: false, total: 0 },
-      lastSync: null,
-      cached: true,
-    },
-    responseSchema: daosListResponseSchema,
-    errorStatuses: [400, 500],
-  },
-  {
-    method: "get",
-    path: "/dao/:daoId",
-    tag: "DAOs",
-    summary: "Get a single cached DAO",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: { daoId: idParam("0", "DAO identifier") },
-    responseExample: {
-      dao: { id: 0, name: "Example DAO", creator: "GABCDEF..." },
-      cached: true,
-    },
-    errorStatuses: [404],
-  },
-  {
-    method: "post",
-    path: "/daos/sync",
-    tag: "DAOs",
-    summary: "Trigger a manual DAO sync from the on-chain registry",
-    auth: true,
-    rateLimit: null,
-    responseExample: { success: true, synced: 5 },
-    errorStatuses: [401, 500],
-  },
-  // ---- IPFS ----
-  {
-    method: "get",
-    path: "/ipfs/health",
-    tag: "IPFS",
-    summary: "IPFS pinning service health",
-    auth: false,
-    rateLimit: "queryLimiter",
-    responseExample: { enabled: true, ok: true },
-  },
-  {
-    method: "post",
-    path: "/ipfs/image",
-    tag: "IPFS",
-    summary: 'Upload an image to IPFS (multipart/form-data, field "image")',
-    auth: true,
-    rateLimit: "ipfsUploadLimiter",
-    responseExample: {
-      cid: "bafybei...",
-      size: 10240,
-      filename: "photo.png",
-      mimeType: "image/png",
-    },
-    errorStatuses: [400, 401, 429, 500, 503],
-  },
-  {
-    method: "post",
-    path: "/ipfs/metadata",
-    tag: "IPFS",
-    summary: "Upload proposal/comment metadata JSON to IPFS",
-    auth: true,
-    rateLimit: "ipfsUploadLimiter",
-    responseExample: { cid: "bafybei...", size: 512 },
-    errorStatuses: [400, 401, 429, 500, 503],
-  },
-  {
-    method: "get",
-    path: "/ipfs/:cid",
-    tag: "IPFS",
-    summary: "Retrieve JSON content pinned to IPFS",
-    auth: false,
-    rateLimit: "ipfsReadLimiter",
-    params: { cid: idParam("bafybei...", "IPFS CID") },
-    responseExample: { version: 1, body: "..." },
-    errorStatuses: [404],
-  },
-  {
-    method: "get",
-    path: "/ipfs/image/:cid",
-    tag: "IPFS",
-    summary: "Retrieve an image pinned to IPFS",
-    auth: false,
-    rateLimit: "ipfsReadLimiter",
-    params: { cid: idParam("bafybei...", "IPFS CID") },
-    responseExample: "(binary image data)",
-    errorStatuses: [404],
-  },
-  // ---- Events ----
-  {
-    method: "get",
-    path: "/events/archived",
-    tag: "Events",
-    summary: "List historical event archives",
-    auth: false,
-    rateLimit: "queryLimiter",
-    query: { daoId: z.string().optional().openapi({ example: "0" }) },
-    responseExample: { archives: [], total: 0 },
-  },
-  {
-    method: "get",
-    path: "/events/archived/:archiveId",
-    tag: "Events",
-    summary: "Retrieve historical archived events",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: {
-      archiveId: idParam("archive_dao_0_1785200000000", "Archive identifier"),
-    },
-    responseExample: {
-      archiveId: "archive_dao_0_1785200000000",
-      events: [],
-      total: 0,
-    },
-  },
-  {
-    method: "get",
-    path: "/events/:daoId",
-    tag: "Events",
-    summary: "Get events for a DAO with cursor-based pagination",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: { daoId: idParam("0", "DAO identifier") },
-    query: {
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .optional()
-        .openapi({ example: 100 }),
-      cursor: z.string().optional().openapi({ example: "eyJpIjoxMjN9" }),
-      types: z
-        .string()
-        .optional()
-        .openapi({ example: "vote_cast,proposal_created" }),
-      orderBy: z
-        .enum(["id", "timestamp", "ledger", "type", "verified", "created_at"])
-        .optional()
-        .openapi({ example: "timestamp" }),
-      orderDirection: z
-        .enum(["ASC", "DESC"])
-        .optional()
-        .openapi({ example: "DESC" }),
-      cursorField: z
-        .enum(["id", "ledger", "timestamp"])
-        .optional()
-        .openapi({ example: "id" }),
-    },
-    responseExample: {
-      data: [],
-      pagination: { cursor: undefined, hasMore: false, total: 0 },
-    },
-    responseSchema: paginatedResponseSchema,
-  },
-  {
-    method: "get",
-    path: "/indexer/status",
-    tag: "Events",
-    summary: "Event indexer status",
-    auth: false,
-    rateLimit: "queryLimiter",
-    responseExample: { running: true, lastLedger: 0 },
-  },
-  {
-    method: "get",
-    path: "/indexer/daos",
-    tag: "Events",
-    summary: "List all indexed DAOs with event counts",
-    auth: false,
-    rateLimit: "queryLimiter",
-    responseExample: { daos: [] },
-  },
-  {
-    method: "post",
-    path: "/events",
-    tag: "Events",
-    summary: "Manually insert an event (admin only)",
-    auth: true,
-    rateLimit: null,
-    body: manualEventSchema,
-    responseExample: { success: true },
-    errorStatuses: [400, 401, 500],
-  },
-  {
-    method: "post",
-    path: "/events/notify",
-    tag: "Events",
-    summary: "Frontend notification of an unverified on-chain event",
-    auth: true,
-    rateLimit: "queryLimiter",
-    body: notifyEventSchema,
-    responseExample: {
-      success: true,
-      message: "Event queued for verification",
-    },
-    errorStatuses: [400, 401, 429, 500],
-  },
-  // ---- Bridge ----
-  {
-    method: "post",
-    path: "/bridge/vote",
-    tag: "Bridge",
-    summary: "Submit a cross-chain (EVM -> Soroban) vote",
-    auth: false,
-    rateLimit: null,
-    body: bridgeVoteSchema,
-    responseExample: { success: true, txHash: "a1b2c3...64hex" },
-    responseSchema: successResponseSchema,
-    errorStatuses: [400, 500],
-  },
-  {
-    method: "get",
-    path: "/bridge/nullifier/:daoId/:proposalId/:nullifier",
-    tag: "Bridge",
-    summary: "Check whether a nullifier has already been used",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: {
-      daoId: idParam("0", "DAO identifier"),
-      proposalId: idParam("1", "Proposal identifier"),
-      nullifier: idParam("0x1234...", "Nullifier hash"),
-    },
-    responseExample: {
-      daoId: 0,
-      proposalId: 1,
-      nullifier: "0x1234...",
-      used: false,
-    },
-    errorStatuses: [404, 500],
-  },
-  {
-    method: "post",
-    path: "/bridge/relay",
-    tag: "Bridge",
-    summary: "Manually trigger cross-chain event relay (admin only)",
-    auth: true,
-    rateLimit: null,
-    responseExample: { success: true },
-    errorStatuses: [401, 500],
-  },
-  // ---- Circuits ----
-  {
-    method: "get",
-    path: "/circuits/:dao/:type/status",
-    tag: "Circuits",
-    summary: "Get the active/available ZK circuit versions for a DAO",
-    auth: false,
-    rateLimit: "queryLimiter",
-    params: circuitParamsSchema.shape,
-    responseExample: {
-      daoId: 0,
-      circuitType: "Vote",
-      currentCircuit: "vote_v1",
-      availableCircuits: [],
-    },
-  },
-  // ---- Admin ----
-  {
-    method: "get",
-    path: "/admin/audit-log",
-    tag: "Admin",
-    summary: "Paginated, hash-chain-verifiable audit log review (admin only)",
-    auth: true,
-    rateLimit: "queryLimiter",
-    query: {
-      limit: z.string().optional().openapi({ example: "50" }),
-      offset: z.string().optional().openapi({ example: "0" }),
-      action: z.string().optional().openapi({ example: "vote_relay" }),
-      format: z.enum(["json", "cef"]).optional(),
-      verify: z.enum(["true", "false"]).optional(),
-    },
-    responseExample: { logs: [], total: 0, limit: 50, offset: 0 },
-    errorStatuses: [401, 500],
-  },
-  {
-    method: "get",
-    path: "/admin/sbt-transfer-attempts",
-    tag: "Admin",
-    summary:
-      "Review flagged membership-SBT transfer/approval attempts for a DAO (admin only)",
-    auth: true,
-    rateLimit: "queryLimiter",
-    query: {
-      daoId: z.string().openapi({ example: "1" }),
-      limit: z.string().optional().openapi({ example: "50" }),
-      offset: z.string().optional().openapi({ example: "0" }),
-    },
-    responseExample: { daoId: 1, attempts: [], total: 0, limit: 50, offset: 0 },
-    errorStatuses: [400, 401, 500],
-  },
+/**
+ * Every route documented in the OpenAPI document, using Express-style
+ * `:param` segments to match the prose headers in backend/API.md.
+ */
+export const ENDPOINTS: Endpoint[] = [
+  { method: "GET", path: "/health" },
+  { method: "GET", path: "/ready" },
+  { method: "GET", path: "/config" },
+  { method: "GET", path: "/db/stats" },
+  { method: "POST", path: "/vote" },
+  { method: "GET", path: "/proposal/:daoId/:proposalId" },
+  { method: "GET", path: "/root/:daoId" },
+  { method: "POST", path: "/comment/anonymous" },
+  { method: "GET", path: "/comment/challenge/:commitment" },
+  { method: "GET", path: "/comments/:daoId/:proposalId/nonce" },
+  { method: "GET", path: "/comments/:daoId/:proposalId" },
+  { method: "GET", path: "/comment/:daoId/:proposalId/:commentId" },
+  { method: "POST", path: "/comment/edit" },
+  { method: "POST", path: "/comment/delete" },
+  { method: "POST", path: "/comment/flag" },
+  { method: "GET", path: "/daos" },
+  { method: "GET", path: "/dao/:daoId" },
+  { method: "POST", path: "/daos/sync" },
+  { method: "GET", path: "/ipfs/health" },
+  { method: "POST", path: "/ipfs/image" },
+  { method: "POST", path: "/ipfs/metadata" },
+  { method: "GET", path: "/ipfs/:cid" },
+  { method: "GET", path: "/ipfs/image/:cid" },
+  { method: "GET", path: "/events/archived" },
+  { method: "GET", path: "/events/archived/:archiveId" },
+  { method: "GET", path: "/events/:daoId" },
+  { method: "GET", path: "/indexer/status" },
+  { method: "GET", path: "/indexer/daos" },
+  { method: "POST", path: "/events" },
+  { method: "POST", path: "/events/notify" },
+  { method: "POST", path: "/bridge/vote" },
+  { method: "GET", path: "/bridge/nullifier/:daoId/:proposalId/:nullifier" },
+  { method: "POST", path: "/bridge/relay" },
+  { method: "GET", path: "/circuits/:dao/:type/status" },
+  { method: "GET", path: "/admin/audit-log" },
+  { method: "GET", path: "/admin/sbt-transfer-attempts" },
 ];
 
 // ============================================
-// SPEC BUILDER
+// DOCUMENT — reads the committed generated spec
 // ============================================
 
-const SECURITY_SCHEME = "RelayerAuth";
+/**
+ * Path to the committed OpenAPI document relative to this module
+ * (`src/openapi.ts` -> `backend/openapi.json`).
+ */
+const OPENAPI_JSON_PATH = fileURLToPath(
+  new URL("../openapi.json", import.meta.url),
+);
 
-function toOpenApiPath(expressPath: string): string {
-  return expressPath.replace(/:([A-Za-z_][A-Za-z0-9_]*)/g, "{$1}");
+let cachedDocument: Record<string, unknown> | null = null;
+
+/**
+ * Returns the full OpenAPI 3.1 document (all versioned routes).
+ *
+ * Loaded from the committed `backend/openapi.json` so the served spec and the
+ * `docs:*` scripts share a single source of truth.
+ */
+export function buildOpenApiDocument(): Record<string, unknown> {
+  if (!cachedDocument) {
+    cachedDocument = JSON.parse(fs.readFileSync(OPENAPI_JSON_PATH, "utf-8"));
+  }
+  return cachedDocument as Record<string, unknown>;
 }
 
-export function buildOpenApiDocument() {
-  const registry = new OpenAPIRegistry();
-
-  registry.registerComponent("securitySchemes", SECURITY_SCHEME, {
-    type: "apiKey",
-    in: "header",
-    name: "X-Relayer-Auth",
-    description:
-      "Shared relayer auth token (also accepted as `Authorization: Bearer <token>`). " +
-      "There is currently one shared token per deployment, not per-user credentials.",
-  });
+/** The complete OpenAPI spec (default export for app server integration). */
+export const openApiSpec = buildOpenApiDocument();
 
   for (const ep of ENDPOINTS) {
     const responses: Record<string, ResponseConfig> = {

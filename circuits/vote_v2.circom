@@ -4,11 +4,6 @@ include "node_modules/circomlib/circuits/poseidon.circom";
 include "node_modules/circomlib/circuits/comparators.circom";
 include "merkle_tree.circom";
 
-// DAO domain separation tag for commitment scheme
-// SHA-256("ZK-VOTE-COMMITMENT") reduced mod BN254 scalar field
-// Prevents cross-protocol attacks where commitments from other systems
-// could be valid in ZK-VOTE
-
 // DaoVote Anonymous Vote Circuit v2
 //
 // Adds chainId as a public signal to prevent cross-chain replay attacks.
@@ -27,27 +22,24 @@ template VoteV2(levels) {
 
     // Public inputs
     signal input root;              // Merkle tree root (verified on-chain)
-    signal input nullifier;         // Unique per vote attempt
-    signal input familyNullifier;   // Links revotes of the same voter without revealing identity
+    signal input nullifier;         // Prevents double voting (domain-separated)
+    signal input familyNullifier;   // Prevents cross-proposal linking by family
     signal input daoId;             // DAO identifier (for domain separation)
     signal input proposalId;        // Which proposal this vote is for
-    signal input voteChoice;        // Candidate index the voter selected
-    signal input numCandidates;     // Total number of candidates (set by election config)
+    signal input voteChoice;        // 0 = against, 1 = for
+    signal input numCandidates;     // Total number of candidates (for range checks)
     signal input chainId;           // Chain identifier (prevents cross-chain replay)
     signal input nonce;             // Auto-incremented for each revote
     signal input relayerAddress;    // Relayer address binding proof to specific relayer (anti-front-running)
 
     // Private inputs
     signal input secret;            // Voter's secret (like password)
-    signal input salt;              // Salt for commitment
+    signal input salt;              // Random salt for commitment
     signal input blindingFactor;    // Random blinding factor for uniform distribution
     signal input pathElements[levels];  // Merkle proof siblings
     signal input pathIndices[levels];   // Merkle proof path (0=left, 1=right)
 
     // 1. Compute identity commitment: Poseidon(DOMAIN_TAG, secret, salt, blindingFactor)
-    // Domain-separated commitment prevents cross-protocol attacks.
-    // Blinding factor ensures uniform distribution across the field even
-    // if secret and salt are correlated (e.g., derived from same wallet signature).
     component commitmentHasher = Poseidon(4);
     commitmentHasher.inputs[0] <== DOMAIN_TAG;
     commitmentHasher.inputs[1] <== secret;
@@ -68,29 +60,24 @@ template VoteV2(levels) {
     root === merkleProof.root;
 
     // 3. Compute family nullifier: Poseidon(secret, daoId, proposalId, chainId)
-    // Links revotes together for the same proposal, preventing duplicate tallies.
-    component familyHasher = Poseidon(4);
-    familyHasher.inputs[0] <== secret;
-    familyHasher.inputs[1] <== daoId;
-    familyHasher.inputs[2] <== proposalId;
-    familyHasher.inputs[3] <== chainId;
+    component familyNullifierHasher = Poseidon(4);
+    familyNullifierHasher.inputs[0] <== secret;
+    familyNullifierHasher.inputs[1] <== daoId;
+    familyNullifierHasher.inputs[2] <== proposalId;
+    familyNullifierHasher.inputs[3] <== chainId;
+    familyNullifier === familyNullifierHasher.out;
 
-    familyNullifier === familyHasher.out;
-
-    // 4. Compute nullifier: Poseidon(secret, daoId, proposalId, chainId, nonce)
-    // Unique nullifier for each vote attempt
+    // 4. Compute per-vote nullifier: Poseidon(secret, daoId, proposalId, chainId, nonce)
     component nullifierHasher = Poseidon(5);
     nullifierHasher.inputs[0] <== secret;
     nullifierHasher.inputs[1] <== daoId;
     nullifierHasher.inputs[2] <== proposalId;
     nullifierHasher.inputs[3] <== chainId;
     nullifierHasher.inputs[4] <== nonce;
-
     nullifier === nullifierHasher.out;
 
-    // 4. Verify candidate index is within bounds: voteChoice < numCandidates
-    // Uses 32-bit LessThan comparator from circomlib.
-    // This prevents a voter from proving a vote for a non-existent candidate.
+    // 5. Verify vote choice is binary and lies in range [0, numCandidates)
+    voteChoice * (voteChoice - 1) === 0;
     component validChoice = LessThan(32);
     validChoice.in[0] <== voteChoice;
     validChoice.in[1] <== numCandidates;

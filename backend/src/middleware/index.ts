@@ -10,6 +10,23 @@ export { csrfGuard, csrfTokenMiddleware } from "./csrf.js";
 export { requestLogger } from "./logging.js";
 export { errorHandler } from "./errorHandler.js";
 export {
+  auditMiddleware,
+  auditLog,
+  redactPii,
+  redactBody,
+  appendAudit,
+  queryAuditLogs,
+  getAllAuditLogs,
+  exportAuditLogs,
+  clearAuditLog,
+  isIdempotencyKeyUsed,
+  markIdempotencyKey,
+  deriveActor,
+  auditAction,
+  REDACTED,
+  SENSITIVE_FIELDS,
+} from "./audit.js";
+export {
   voteLimiter,
   walletRateLimiter,
   queryLimiter,
@@ -19,13 +36,15 @@ export {
   graduatedSlowDown,
   getRateLimitMetrics,
   claimLimiter,
+  createPerMemberLimiter,
+  commitmentRegistrationLimiter,
 } from "./rateLimit.js";
 export { validateBody, validateQuery, validateParams } from "./validate.js";
-export { auditLog } from "./audit.js";
 export {
   degradationContext,
   noteDegraded,
   sendPartial,
 } from "./degradation.js";
+export { auditLog } from "./audit.js";
 export { metricsMiddleware } from "./metrics.js";
 export { bodyLimit } from "./bodyLimit.js";
