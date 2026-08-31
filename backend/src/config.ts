@@ -99,7 +99,25 @@ const envSchema = z.object({
   REWARDS_CONTRACT_ID: z.string().min(1).optional(),
   VOTING_VK_VERSION: z.coerce.number().int().optional(),
 
-  CORS_ORIGIN: z.string().optional(),
+  CORS_ORIGIN: z.string().optional().superRefine((val, ctx) => {
+    const parent = ctx.parent as Record<string, unknown>;
+    if (parent.NODE_ENV === "production") {
+      if (!val || val.trim() === "") {
+        ctx.addIssue({ code: "custom", message: "CORS_ORIGIN must be set in production" });
+      } else {
+        const origins = val.split(",").map((s) => s.trim()).filter(Boolean);
+        if (origins.some((o) => o === "*")) {
+          ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain '*' in production" });
+        }
+        if (origins.some((o) => o.includes("*"))) {
+          ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain wildcards in production" });
+        }
+      }
+    }
+  }),
+  CORS_ALLOWED_METHODS: z.string().default("GET,POST,OPTIONS"),
+  CORS_ALLOWED_HEADERS: z.string().default("Content-Type,Authorization"),
+  CORS_MAX_AGE: z.coerce.number().int().positive().default(3600),
 
   LOG_CLIENT_IP: z.enum(["plain", "hash"]).optional(),
   LOG_REQUEST_BODY: z
@@ -352,6 +370,11 @@ export const config = {
 
   // Server
   port: validatedEnv.PORT,
+
+  // CORS
+  corsMethods: validatedEnv.CORS_ALLOWED_METHODS,
+  corsHeaders: validatedEnv.CORS_ALLOWED_HEADERS,
+  corsMaxAge: validatedEnv.CORS_MAX_AGE,
 
   // Clustering
   clusterEnabled: validatedEnv.CLUSTER_ENABLED,
