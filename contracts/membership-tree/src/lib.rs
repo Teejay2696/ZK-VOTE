@@ -704,6 +704,37 @@ impl MembershipTree {
         (depth, next_index, root)
     }
 
+    /// Returns the number of retained Merkle roots for this DAO.
+    /// Useful for UI warnings before the MAX_ROOT_HISTORY eviction window fills.
+    pub fn root_history_len(env: Env, dao_id: u64) -> u32 {
+        Self::bump_instance(&env);
+        let roots_key = DataKey::Roots(dao_id);
+        let roots: Vec<U256> = env
+            .storage()
+            .persistent()
+            .get(&roots_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        Self::bump_persistent(&env, &roots_key);
+        roots.len()
+    }
+
+    /// Returns the current anonymity-set size for a DAO, approximated by the
+    /// number of currently registered commitments in the tree.
+    pub fn anonymity_set_size(env: Env, dao_id: u64) -> u32 {
+        Self::bump_instance(&env);
+        let next_index: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextLeafIndex(dao_id))
+            .unwrap_or(0);
+        let depth_key = DataKey::TreeDepth(dao_id);
+        if !env.storage().persistent().has(&depth_key) {
+            return 0;
+        }
+        Self::bump_persistent(&env, &depth_key);
+        next_index
+    }
+
     /// Get Merkle path for a specific leaf index
     /// Returns (pathElements, pathIndices) where:
     /// - pathElements[i] is the sibling hash at level i

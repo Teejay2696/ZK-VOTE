@@ -43,7 +43,7 @@ The membership-tree contract maintains a FIFO history of the last 30 Merkle root
 **Guidance for DAOs:**
 - DAOs with frequent membership changes (>30 changes during a proposal's voting period) may strand some voters.
 - Consider proposal duration vs. expected membership change rate.
-- Frontend could warn when root age approaches eviction threshold.
+- Frontend should warn when root age approaches the eviction threshold and show the current anonymity set size to contextualize the risk.
 - For high-activity DAOs, consider shorter voting windows or coordinating membership changes.
 
 ## Fixed Mode Revocation Semantics (Intentional Behavior)

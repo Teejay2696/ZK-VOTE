@@ -80,6 +80,7 @@ import { csrfGuard, requestLogger, errorHandler, auditMiddleware } from "./middl
 import {
   healthRoutes,
   initHealthRoutes,
+  analyticsRoutes,
   votingRoutes,
   daoRoutes,
   ipfsRoutes,
@@ -221,6 +222,7 @@ initIndexerRoutes(triggerDaoMembershipSync);
 // Mount route handlers (metrics first, before CSRF/auth middleware)
 app.use(metricsRoutes);
 app.use(healthRoutes);
+app.use(analyticsRoutes);
 app.use(remediationRoutes);
 app.use(noStore, votingRoutes);
 app.use(daoRoutes);
