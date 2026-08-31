@@ -174,10 +174,35 @@ app.use(metricsMiddleware);
 app.use(degradationContext);
 
 // Security: CORS configuration
-const corsOrigins = config.corsOrigins === "*" ? "*" : config.corsOrigins;
+const isProduction = process.env.NODE_ENV === "production";
+const configuredCorsOrigins = config.corsOrigins
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+if (isProduction && configuredCorsOrigins.includes("*")) {
+  throw new Error(
+    "CORS_ORIGIN must be a comma-separated list of exact origins in production; '*' is not allowed.",
+  );
+}
+
+const allowedCorsOrigins = new Set(configuredCorsOrigins);
+
 const corsOptions: cors.CorsOptions = {
-  origin: corsOrigins,
-  methods: ["GET", "POST"],
+  origin: (origin, callback) => {
+    // Allow non-browser requests (e.g. curl, health checks) that omit Origin.
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    if (allowedCorsOrigins.has(origin) || allowedCorsOrigins.has("*")) {
+      callback(null, true);
+      return;
+    }
+    log("warn", "cors_rejected", { origin });
+    callback(null, false);
+  },
+  methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: [
     "Content-Type",
     "Authorization",
@@ -192,7 +217,8 @@ const corsOptions: cors.CorsOptions = {
     "X-Service-Degraded",
     "X-Service-Status",
   ],
-  maxAge: 86400, // 24 hours
+  credentials: true,
+  maxAge: 3600,
 };
 app.use(cors(corsOptions));
 
