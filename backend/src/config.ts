@@ -99,72 +99,7 @@ const envSchema = z.object({
   REWARDS_CONTRACT_ID: z.string().min(1).optional(),
   VOTING_VK_VERSION: z.coerce.number().int().optional(),
 
-  CORS_ORIGIN: z.string().optional().superRefine((val, ctx) => {
-    const parent = ctx.parent as Record<string, unknown>;
-    const isProd = parent.NODE_ENV === "production";
-
-    if (isProd && (!val || val.trim() === "")) {
-      ctx.addIssue({ code: "custom", message: "CORS_ORIGIN must be set in production" });
-      return;
-    }
-
-    const origins = val
-      ? val.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
-
-    if (origins.length === 0) return;
-
-    if (origins.length > 1 && origins.includes("*")) {
-      ctx.addIssue({
-        code: "custom",
-        message: "CORS_ORIGIN cannot combine '*' with specific origins",
-      });
-      return;
-    }
-
-    if (origins[0] === "*") {
-      if (isProd) {
-        ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain '*' in production" });
-      }
-      return;
-    }
-
-    if (origins.some((o) => o.includes("*"))) {
-      ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain wildcards" });
-      return;
-    }
-
-    for (const origin of origins) {
-      try {
-        const parsed = new URL(origin);
-        if (!["http:", "https:"].includes(parsed.protocol)) {
-          ctx.addIssue({ code: "custom", message: `CORS_ORIGIN must use http or https: ${origin}` });
-        } else if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
-          ctx.addIssue({ code: "custom", message: `CORS_ORIGIN must not contain a path, query, or hash: ${origin}` });
-        }
-      } catch {
-        ctx.addIssue({ code: "custom", message: `CORS_ORIGIN is not a valid origin: ${origin}` });
-      }
-    }
-  }),
-  CORS_ALLOWED_METHODS: z
-    .string()
-    .default("GET,POST,OPTIONS")
-    .refine(
-      (val) => {
-        const methods = val
-          .split(",")
-          .map((m) => m.trim().toUpperCase())
-          .filter(Boolean);
-        return (
-          methods.length > 0 &&
-          methods.every((m) => ["GET", "POST", "OPTIONS"].includes(m))
-        );
-      },
-      { message: "CORS_ALLOWED_METHODS must be restricted to GET, POST, OPTIONS" },
-    ),
-  CORS_ALLOWED_HEADERS: z.string().default("Content-Type,Authorization"),
-  CORS_MAX_AGE: z.coerce.number().int().positive().default(3600),
+  CORS_ORIGIN: z.string().optional(),
 
   LOG_CLIENT_IP: z.enum(["plain", "hash"]).optional(),
   LOG_REQUEST_BODY: z
@@ -418,11 +353,6 @@ export const config = {
   // Server
   port: validatedEnv.PORT,
 
-  // CORS
-  corsMethods: validatedEnv.CORS_ALLOWED_METHODS,
-  corsHeaders: validatedEnv.CORS_ALLOWED_HEADERS,
-  corsMaxAge: validatedEnv.CORS_MAX_AGE,
-
   // Clustering
   clusterEnabled: validatedEnv.CLUSTER_ENABLED,
   clusterWorkers: Math.max(
@@ -477,12 +407,18 @@ export const config = {
   staticVkVersion: validatedEnv.VOTING_VK_VERSION,
 
   // CORS
-  corsOrigins:
-    validatedEnv.CORS_ORIGIN && validatedEnv.CORS_ORIGIN.trim() !== "*"
-      ? validatedEnv.CORS_ORIGIN.split(",")
-          .map((origin) => origin.trim())
-          .filter(Boolean)
-      : ("*" as const),
+  corsOrigins: validatedEnv.CORS_ORIGIN
+    ? validatedEnv.CORS_ORIGIN.split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+    : (["*"] as string[]),
+  corsAllowedMethods: ["GET", "POST", "OPTIONS"] as string[],
+  corsAllowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-CSRF-Token",
+  ] as string[],
+  corsMaxAge: 3600,
 
   // Logging
   logClientIp: validatedEnv.LOG_CLIENT_IP,
@@ -601,6 +537,33 @@ export const config = {
   testMode: validatedEnv.RELAYER_TEST_MODE,
 } as const;
 
+export const corsOptions = {
+  origin: (
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void,
+  ) => {
+    if (
+      !origin ||
+      config.corsOrigins.includes(origin) ||
+      config.corsOrigins.includes("*")
+    ) {
+      callback(null, true);
+      return;
+    }
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "cors_origin_rejected",
+        origin,
+      }),
+    );
+    callback(null, false);
+  },
+  methods: config.corsAllowedMethods,
+  allowedHeaders: config.corsAllowedHeaders,
+  maxAge: config.corsMaxAge,
+};
+
 // ============================================
 // SIZE LIMITS
 // ============================================
@@ -657,6 +620,33 @@ export const BN254_SCALAR_FIELD = BigInt(
  */
 export function validateEnv(): void {
   const errors: string[] = [];
+
+  const isProduction = config.NODE_ENV === "production";
+  if (isProduction) {
+    const corsOrigins = config.corsOrigins;
+    if (corsOrigins.length === 0 || corsOrigins.includes("*")) {
+      errors.push(
+        "CORS_ORIGIN must be set to explicit origins in production (no wildcards or regex)",
+      );
+    }
+    for (const origin of corsOrigins) {
+      if (origin === "*") continue;
+      if (origin.includes("*") || origin.includes("?") || /[\[\]{}()|]/.test(origin)) {
+        errors.push(
+          `CORS_ORIGIN contains wildcard or regex pattern: "${origin}"`,
+        );
+        continue;
+      }
+      try {
+        const parsed = new URL(origin);
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+          errors.push(`CORS_ORIGIN is not a valid origin: "${origin}"`);
+        }
+      } catch {
+        errors.push(`CORS_ORIGIN is not a valid origin: "${origin}"`);
+      }
+    }
+  }
 
   if (!config.votingContractId) errors.push("VOTING_CONTRACT_ID is required");
   if (!config.treeContractId) errors.push("TREE_CONTRACT_ID is required");
