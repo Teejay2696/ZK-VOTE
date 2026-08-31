@@ -24,8 +24,8 @@ export const BN254_FR_MODULUS_HEX =
  * Circuit constants
  */
 export const TREE_DEPTH = 18;
-export const NUM_PUBLIC_SIGNALS = 5;
-export const VK_IC_LENGTH = NUM_PUBLIC_SIGNALS + 1; // 6 elements
+export const NUM_PUBLIC_SIGNALS = 6;
+export const VK_IC_LENGTH = NUM_PUBLIC_SIGNALS + 1; // 7 elements
 
 // ============================================
 // PROOF TYPES
@@ -110,10 +110,15 @@ export function assertValidNullifier(nullifier: bigint | string): void {
 
 // ============================================
 // CONTRACT ERROR CODES
+//
+// These objects use the frontend-conventional { ErrorName: numericCode }
+// mapping.  The wire-format variants ({ numericCode: { message } }) are
+// available in src/generated/contract-types.ts as *ErrorRaw exports.
 // ============================================
 
 /**
  * DAO Registry contract error codes
+ * Source of truth: contracts/dao-registry/src/index.ts (RegistryError)
  */
 export const RegistryError = {
   NameTooLong: 1,
@@ -125,6 +130,7 @@ export type RegistryError = (typeof RegistryError)[keyof typeof RegistryError];
 
 /**
  * Membership SBT contract error codes
+ * Source of truth: contracts/membership-sbt/src/index.ts (SbtError)
  */
 export const SbtError = {
   NotDaoAdmin: 1,
@@ -137,6 +143,7 @@ export type SbtError = (typeof SbtError)[keyof typeof SbtError];
 
 /**
  * Membership Tree contract error codes
+ * Source of truth: contracts/membership-tree/src/index.ts (TreeError)
  */
 export const TreeError = {
   NotAdmin: 1,
@@ -154,11 +161,14 @@ export const TreeError = {
   RootNotFound: 13,
   AlreadyInitialized: 14,
   MemberNotRevoked: 15,
+  CommitmentAlreadyUsed: 16,
+  RateLimited: 17,
 } as const;
 export type TreeError = (typeof TreeError)[keyof typeof TreeError];
 
 /**
  * Voting contract error codes
+ * Source of truth: contracts/voting/src/index.ts (VotingError)
  */
 export const VotingError = {
   NotAdmin: 1,
@@ -200,6 +210,7 @@ export type VotingError = (typeof VotingError)[keyof typeof VotingError];
 
 /**
  * Comments contract error codes
+ * Source of truth: contracts/comments/src/index.ts (CommentsError)
  */
 export const CommentsError = {
   NotAdmin: 1,
@@ -263,12 +274,26 @@ export interface DaoMigration {
   inOverlapWindow: boolean;
 }
 
+export interface VkProposal {
+  id: number;
+  circuitId: string;
+  circuitType: "Vote" | "Comment";
+  proposedBy: string;
+  proposedAt: number;
+  executeAfter: number;
+  requiredApprovals: number;
+  approvals: number;
+  status: "Pending" | "Approved" | "Executed" | "Cancelled";
+  daoId?: number;
+}
+
 export interface CircuitStatusResponse {
   daoId: number;
   circuitType: "Vote" | "Comment";
   currentCircuit: string;
   availableCircuits: CircuitInfo[];
   migration?: DaoMigration;
+  pendingVkProposal?: VkProposal;
 }
 
 export const CIRCUIT_VERSIONS = {
@@ -368,6 +393,8 @@ export const ERROR_MESSAGES: Record<string, Record<number, string>> = {
     [TreeError.RootNotFound]: "Merkle root not found in history",
     [TreeError.AlreadyInitialized]: "Tree already initialized",
     [TreeError.MemberNotRevoked]: "Member has not been revoked",
+    [TreeError.CommitmentAlreadyUsed]: "Identity commitment already used",
+    [TreeError.RateLimited]: "Too many registrations: try again once the cooldown window has passed",
   },
   Voting: {
     [VotingError.NotAdmin]: "Only DAO admin can perform this action",
@@ -655,3 +682,20 @@ export function getErrorMessage(
   }
   return ERROR_MESSAGES[contract]?.[code] ?? `Unknown error (code ${code})`;
 }
+
+// ============================================
+// CONTRACT TYPE RE-EXPORTS
+//
+// Structural types from generated stellar-sdk bindings exposed via a stable
+// import path.  Consumers can use either:
+//   import { VoteMode } from '@/types'
+//   import { VoteMode } from '@/generated/contract-types'
+// ============================================
+
+export type {
+  DaoInfo,
+  VoteMode,
+  ProposalInfo,
+  ProposalState,
+  CommentInfo,
+} from "../generated/contract-types.js";

@@ -128,7 +128,7 @@ fn panic_coarse(env: &Env, ctx: PathContext, err: RewardsError) {
 }
 
 const MAX_IC_LENGTH: u32 = 21;
-const NUM_PUBLIC_SIGNALS: u32 = 5;
+const NUM_PUBLIC_SIGNALS: u32 = 6;
 const CLAIM_CIRCUIT_IC_LEN: u32 = NUM_PUBLIC_SIGNALS + 1;
 
 // Funding / reward caps — Sybil bounds

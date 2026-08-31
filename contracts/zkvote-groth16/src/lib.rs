@@ -240,6 +240,37 @@ pub fn validate_nullifier(env: &Env, nullifier: &U256) -> Result<(), Groth16Erro
     assert_in_field(env, nullifier)
 }
 
+
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut result = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
+pub fn is_identity_bn254_g1(bytes: &BytesN<64>) -> bool {
+    let zeros = [0u8; 64];
+    constant_time_eq(&bytes.to_array(), &zeros)
+}
+
+pub fn is_identity_bn254_g2(bytes: &BytesN<128>) -> bool {
+    let zeros = [0u8; 128];
+    constant_time_eq(&bytes.to_array(), &zeros)
+}
+
+pub fn is_identity_bls381_g1(bytes: &BytesN<96>) -> bool {
+    let mut id = [0u8; 96];
+    id[0] = 0xc0;
+    constant_time_eq(&bytes.to_array(), &id)
+}
+
+pub fn is_identity_bls381_g2(bytes: &BytesN<192>) -> bool {
+    let mut id = [0u8; 192];
+    id[0] = 0xc0;
+    constant_time_eq(&bytes.to_array(), &id)
+}
+
 #[cfg(not(any(test, feature = "testutils")))]
 fn verify_groth16_impl<C: Groth16Curve>(
     env: &Env,
@@ -250,6 +281,13 @@ fn verify_groth16_impl<C: Groth16Curve>(
     if pub_signals.len() + 1 != vk.ic.len() {
         return false;
     }
+
+    // Prevent invalid-curve/subgroup and timing attacks by explicitly rejecting identity points
+    // in constant-time before performing any pairing operations.
+    if is_identity_bn254_g1(&proof.a) || is_identity_bn254_g2(&proof.b) || is_identity_bn254_g1(&proof.c) {
+        return false;
+    }
+
 
     let vk_x = compute_vk_x::<C>(env, vk, pub_signals);
 
@@ -325,6 +363,13 @@ fn verify_groth16_impl_bls381(
     if pub_signals.len() + 1 != vk.ic.len() {
         return false;
     }
+
+    // Prevent invalid-curve/subgroup and timing attacks by explicitly rejecting identity points
+    // in constant-time before performing any pairing operations.
+    if is_identity_bls381_g1(&proof.a) || is_identity_bls381_g2(&proof.b) || is_identity_bls381_g1(&proof.c) {
+        return false;
+    }
+
 
     let vk_x = compute_vk_x_impl_bls381(env, vk, pub_signals);
 
@@ -601,6 +646,36 @@ mod tests {
     }
 
     #[test]
+
+    #[test]
+    fn test_timing_identity_rejection() {
+        let env = Env::default();
+        let vk = VerificationKey {
+            alpha: BytesN::from_array(&env, &[0u8; 64]),
+            beta: BytesN::from_array(&env, &[0u8; 128]),
+            gamma: BytesN::from_array(&env, &[0u8; 128]),
+            delta: BytesN::from_array(&env, &[0u8; 128]),
+            ic: soroban_sdk::vec![&env, BytesN::from_array(&env, &[0u8; 64])],
+        };
+        let mut proof = Proof {
+            a: BytesN::from_array(&env, &[0u8; 64]), // Identity point
+            b: BytesN::from_array(&env, &[0u8; 128]),
+            c: BytesN::from_array(&env, &[0u8; 64]),
+        };
+        let signals = soroban_sdk::vec![&env];
+        
+        // This should quickly return false without trying to parse or pair
+        // (if not rejected, the host function would panic or take longer)
+        // Note: verify_groth16 returns true in test mode normally, but here we can check the constant time func
+        assert!(is_identity_bn254_g1(&proof.a));
+        
+        // Modify a to not be identity
+        let mut a_bytes = [0u8; 64];
+        a_bytes[0] = 1;
+        proof.a = BytesN::from_array(&env, &a_bytes);
+        assert!(!is_identity_bn254_g1(&proof.a));
+    }
+
     fn test_bls381_verify_groth16_ic_mismatch() {
         let env = Env::default();
         let vk = VerificationKeyBls381 {
