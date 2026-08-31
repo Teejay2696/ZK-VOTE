@@ -85,6 +85,7 @@ import {
 import {
   healthRoutes,
   initHealthRoutes,
+  analyticsRoutes,
   votingRoutes,
   daoRoutes,
   ipfsRoutes,
@@ -257,6 +258,8 @@ initIndexerRoutes(triggerDaoMembershipSync);
 // Mount route handlers (metrics first, before CSRF/auth middleware)
 app.use(metricsRoutes);
 app.use(healthRoutes);
+app.use(analyticsRoutes);
+app.use(remediationRoutes);
 app.use(noStore, votingRoutes);
 app.use(daoRoutes);
 app.use(ipfsRoutes);
@@ -339,9 +342,6 @@ async function gracefulShutdown(reason: string): Promise<void> {
   });
 
   await httpClosed;
-
-  // Wait for any in-flight sequence-locked chain submissions to drain.
-  // Returns false on timeout with work still outstanding.
   const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
 
   clearTimeout(forceExitTimer);
