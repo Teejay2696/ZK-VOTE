@@ -23,6 +23,9 @@ import {
   waitForTransaction,
   withSequenceLock,
   sequenceManager,
+  submitVoteViaRelayerQuorum,
+  scheduleCoverTraffic,
+  monitorMissingVotes,
   u256ToScVal,
   proofToScVal,
   canonicalProofFingerprint,
@@ -83,6 +86,11 @@ import { sharedSingleFlight } from "../utils/singleflight.js";
 import type { Groth16Proof } from "../types/index.js";
 
 const router = Router();
+
+if (!config.testMode) {
+  scheduleCoverTraffic();
+  monitorMissingVotes();
+}
 
 interface VoteExecutionInput {
   daoId: number;
@@ -877,16 +885,117 @@ router.post(
         }
       }
 
-      let queuePayload: VoteQueuedPayload = {
-        daoId,
-        proposalId,
-        choice,
-        nullifier,
-        root,
-        proof,
-        nonce,
-        timestamp,
-      };
+      // Convert inputs to Soroban types
+      let scNullifier: StellarSdk.xdr.ScVal;
+      let scRoot: StellarSdk.xdr.ScVal;
+      let scProof: StellarSdk.xdr.ScVal;
+      try {
+        scNullifier = u256ToScVal(nullifier);
+        scRoot = u256ToScVal(root);
+        scProof = proofToScVal(proof);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+
+      if (config.testMode) {
+        return res.status(400).json({ error: "Simulation failed (test mode)" });
+      }
+
+      // Build contract call
+      const contract = new StellarSdk.Contract(config.votingContractId!);
+
+      const args = [
+        StellarSdk.nativeToScVal(daoId, { type: "u64" }),
+        StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
+        StellarSdk.nativeToScVal(choice, { type: "bool" }),
+        scNullifier,
+        scRoot,
+        scProof,
+      ];
+
+      const operation = contract.call("vote", ...args);
+
+      // Serialize account fetch + build + simulate + sign + submit under sequence lock
+      // to prevent nonce race conditions between concurrent requests
+      const { sendResult, result } = await withSequenceLock(async () => {
+        // Get relayer account
+        const account = await (server as StellarSdk.rpc.Server).getAccount(
+          relayerKeypair.publicKey(),
+        );
+
+        // Build transaction
+        const tx = new StellarSdk.TransactionBuilder(account, {
+          fee: "100000",
+          networkPassphrase: config.networkPassphrase,
+        })
+          .addOperation(operation)
+          .setTimeout(30)
+          .build();
+
+        // Simulate
+        log("info", "simulate_vote", { daoId, proposalId });
+        const simResult = await callWithTimeout(
+          () =>
+            simulateWithBackoff(() =>
+              (server as StellarSdk.rpc.Server).simulateTransaction(tx),
+            ),
+          "simulate_vote",
+        );
+
+        if (!StellarSdk.rpc.Api.isSimulationSuccess(simResult)) {
+          log("warn", "simulation_failed", {
+            daoId,
+            proposalId,
+          });
+          // All proof/eligibility failures surface as VOTE_REJECTED — never
+          // expose which specific check failed (THREAT_MODEL.md §privacy).
+          throw new Error("SIMULATION_FAILED:VOTE_REJECTED");
+        }
+
+        // Prepare and dispatch through the relay quorum. The quorum signs
+        // using MPC key shares and selects an anonymous egress peer.
+        log("info", "submit_vote", { daoId, proposalId });
+        const sr = await submitVoteViaRelayerQuorum({
+          transaction: tx,
+          simulationResult: simResult,
+          daoId,
+          proposalId,
+          nullifier,
+        });
+
+        if (sr.status === "ERROR") {
+          // tx_bad_seq: sequence desynchronized — mark dirty and retry once
+          const isBadSeq = sequenceManager.handleTxError(
+            typeof (sr as any).errorResult === "string"
+              ? (sr as any).errorResult
+              : JSON.stringify((sr as any).errorResult ?? ""),
+          );
+          if (nullifier) {
+            updateTransactionLogStatus(nullifier, "FAILED");
+            updateVoteSubmission(nullifier, "failed");
+          }
+          log("error", "submit_failed", {
+            daoId,
+            proposalId,
+            error: (sr as any).errorResult,
+            isBadSeq,
+          });
+          throw new Error(isBadSeq ? "SUBMIT_FAILED_BAD_SEQ" : "SUBMIT_FAILED");
+        }
+
+        if (nullifier && sr.hash) {
+          recordTransactionLog(nullifier, sr.hash, "PENDING");
+        }
+
+        // Wait for confirmation
+        log("info", "submitted", { txHash: sr.hash, daoId, proposalId });
+        const r = await callWithTimeout(
+          () => waitForTransaction(sr.hash),
+          "wait_for_vote",
+        );
+
+        return { sendResult: sr, result: r };
+      });
 
       try {
         const { jobId, status } = enqueueQueuedVote(queuePayload);

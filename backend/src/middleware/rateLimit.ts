@@ -149,12 +149,15 @@ const headerOptions = {
 
 /**
  * Key generator for wallet address rate limiter
+ *
+ * Wallet-only: no IP fallback. Anonymous relay/Tor clients share egress IPs,
+ * so keying on IP would both leak linkability and false-positive under the
+ * MPC submitter / cover-traffic scheduler.
  */
 const walletKeyGenerator = (req: Express.Request): string => {
   const wallet =
     (req as any).body?.walletAddress ||
     (req as any).headers?.["x-wallet-address"] ||
-    (req as any).ip ||
     "";
   return crypto.createHash("sha256").update(String(wallet)).digest("hex");
 };
@@ -194,7 +197,7 @@ export const walletRateLimiter = isTestMode
 
 /**
  * Rate limiter for vote submissions
- * 10 votes per minute per IP
+ * 10 votes per minute per wallet
  */
 export const voteLimiter = isTestMode
   ? noopMiddleware
@@ -205,7 +208,7 @@ export const voteLimiter = isTestMode
         max: 10,
         ...headerOptions,
         store: getStore("vote"),
-        keyGenerator,
+        keyGenerator: walletKeyGenerator,
         handler: makeHandler(
           "vote",
           "Too many vote requests, please try again later",
@@ -316,7 +319,7 @@ export const graduatedSlowDown = isTestMode
 
 /**
  * Rate limiter for vote-to-earn claim submissions
- * 10 claims per minute per IP (same as vote, anonymity-sensitive)
+ * 10 claims per minute per wallet (same as vote, anonymity-sensitive)
  */
 export const claimLimiter = isTestMode
   ? noopMiddleware
@@ -326,7 +329,7 @@ export const claimLimiter = isTestMode
       message: { error: "Too many claim requests, please try again later" },
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator,
+      keyGenerator: walletKeyGenerator,
     });
 
 // ============================================

@@ -564,6 +564,31 @@ export function createRpcPool(
 
 export const rpcPoolManager = createRpcPool(config.rpcUrls || [config.rpcUrl]);
 
+/**
+ * Submit a raw transaction XDR to all healthy RPC endpoints and return the
+ * first non-error response. This provides a relay quorum — no single RPC
+ * endpoint can censor a vote by silently dropping it.
+ */
+export async function submitToRelayQuorum(tx: StellarSdk.Transaction): Promise<any> {
+  const servers = (rpcPoolManager as any).endpoints
+    .filter((e: any) => e.healthy)
+    .map((e: any) => e.server);
+  if (servers.length === 0) {
+    throw new Error("No healthy relay endpoints available");
+  }
+  let lastError: unknown;
+  for (const srv of servers) {
+    try {
+      const result = await srv.sendTransaction(tx);
+      if (result.status !== "ERROR") return result;
+      lastError = new Error(result.errorResult);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 // Circuit breaker for Soroban RPC calls — trips when the RPC pool is
 // degraded across the board, so requests fail fast instead of each one
 // running its own retry/timeout against a service that is known to be down.
