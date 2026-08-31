@@ -12,8 +12,6 @@ import cors from "cors";
 import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 
-import { buildOpenApiDocument } from "./openapi.js";
-
 // Configuration and types
 import { config, validateEnv, isValidContractId } from "./config.js";
 
@@ -74,7 +72,14 @@ import {
 import { closeDb } from "./services/db.js";
 
 // Middleware
-import { csrfGuard, requestLogger, errorHandler, auditMiddleware } from "./middleware/index.js";
+import {
+  csrfGuard,
+  requestLogger,
+  errorHandler,
+  auditMiddleware,
+  metricsMiddleware,
+  degradationContext,
+} from "./middleware/index.js";
 
 // Routes
 import {
@@ -89,6 +94,10 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
+  metricsRoutes,
+  remediationRoutes,
+  adminRoutes,
+  registerShutdownHandler,
 } from "./routes/index.js";
 import openApiSpec from "./openapi.js";
 
@@ -222,6 +231,7 @@ initIndexerRoutes(triggerDaoMembershipSync);
 app.use(metricsRoutes);
 app.use(healthRoutes);
 app.use(remediationRoutes);
+app.use(adminRoutes);
 app.use(noStore, votingRoutes);
 app.use(daoRoutes);
 app.use(ipfsRoutes);
@@ -230,6 +240,7 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
 // Global error handler (must be last)
 app.use(errorHandler);
@@ -297,6 +308,8 @@ async function gracefulShutdown(reason: string): Promise<void> {
   });
 
   await httpClosed;
+  const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
+  closeDb();
 
   clearTimeout(forceExitTimer);
   log("info", "shutdown_complete", {

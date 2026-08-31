@@ -402,6 +402,7 @@ export const config = {
   membershipSbtContractId: process.env.MEMBERSHIP_SBT_CONTRACT_ID,
   bridgeContractId: process.env.BRIDGE_CONTRACT_ID,
   circuitRegistryContractId: process.env.CIRCUIT_REGISTRY_CONTRACT_ID,
+  rewardsContractId: validatedEnv.REWARDS_CONTRACT_ID,
 
   // VK Version
   staticVkVersion: validatedEnv.VOTING_VK_VERSION,
@@ -712,6 +713,21 @@ export function validateEnv(): void {
   if (
     config.commentsContractId &&
     !isValidContractId(config.commentsContractId)
+  ) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "invalid_contract_id",
+        var: "COMMENTS_CONTRACT_ID",
+        value: config.commentsContractId,
+      }),
+    );
+    process.exit(1);
+  }
+
+  if (
+    config.rewardsContractId &&
+    !isValidContractId(config.rewardsContractId)
   ) {
     console.error(
       JSON.stringify({
