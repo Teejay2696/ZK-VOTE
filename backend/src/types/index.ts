@@ -12,8 +12,41 @@ declare global {
   namespace Express {
     interface Request {
       ctx?: string; // Request context ID for logging
+      authToken?: unknown;
+      authClientId?: string;
+      authTokenId?: string;
     }
   }
+}
+
+export interface RelaySessionCapability {
+  daoId?: number;
+  actions?: string[];
+  nonce?: string;
+  issuedAt?: number;
+  expiresAt?: number;
+  scope?: string;
+}
+
+export interface RelaySession {
+  id: string;
+  clientId: string;
+  daoId?: number;
+  nonce: string;
+  issuedAt: number;
+  expiresAt: number;
+  capabilities: string[];
+  publicKey?: string;
+  signature: string;
+}
+
+export interface RelayMetadataEnvelope {
+  keyId: string;
+  daoId?: number;
+  kind: "verification-key" | "threshold" | "tally" | "relay-metadata";
+  ciphertext: string;
+  nonce: string;
+  createdAt: string;
 }
 
 // ============================================
