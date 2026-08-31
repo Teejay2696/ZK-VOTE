@@ -115,6 +115,7 @@ export interface VoteProofInput {
   daoId: string;
   proposalId: string;
   voteChoice: string; // "0" for no, "1" for yes
+  relayerAddress: string; // Relayer Stellar address - public signal for relayer binding
   commitment: string; // Identity commitment - private input, computed internally in circuit
   pathElements: string[];
   pathIndices: number[];
@@ -196,7 +197,7 @@ export async function generateVoteProof(
     let circuitInput: CircuitSignals;
 
     if (circuitVersion === "v2") {
-      // vote_v2.circom
+      // vote_v2.circom: 10 public signals
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
@@ -204,6 +205,7 @@ export async function generateVoteProof(
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
         chainId: input.chainId || "0",
+        relayerAddress: input.relayerAddress,
         secret: input.secret,
         salt: input.salt,
         blindingFactor: input.blindingFactor,
@@ -211,13 +213,14 @@ export async function generateVoteProof(
         pathIndices: input.pathIndices,
       };
     } else {
-      // vote_v1.circom
+      // vote_v1.circom: 7 public signals (vote.circom with relayerAddress)
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
+        relayerAddress: input.relayerAddress,
         secret: input.secret,
         salt: input.salt,
         blindingFactor: input.blindingFactor,

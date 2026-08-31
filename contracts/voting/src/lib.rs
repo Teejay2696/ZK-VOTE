@@ -157,6 +157,10 @@ pub enum VotingError {
     MerkleRootLocked = 63,
     /// Commitment window for root updates has expired
     CommitmentWindowExpired = 64,
+    /// Relayer address is zero or not in BN254 scalar field
+    InvalidRelayerAddress = 69,
+    /// Relayer address in proof does not match actual relayer submitting transaction
+    RelayerMismatch = 70,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -170,8 +174,8 @@ const MAX_CID_LEN: u32 = 64; // Max IPFS CID length (CIDv1 is ~59 chars)
 const MAX_UPGRADE_PAYLOAD_LEN: u32 = 4096;
 
 // Circuit constants
-/// Vote circuit public signals: root, nullifier, dao_id, proposal_id, vote_choice, num_candidates
-const NUM_PUBLIC_SIGNALS: u32 = 6;
+/// Vote circuit public signals: root, nullifier, dao_id, proposal_id, vote_choice, num_candidates, relayer_address
+const NUM_PUBLIC_SIGNALS: u32 = 7;
 // IC (inner commitment) vector length for Groth16 VK = num_public_inputs + 1
 const VOTE_CIRCUIT_IC_LEN: u32 = NUM_PUBLIC_SIGNALS + 1;
 pub const MAX_PAUSE_DURATION: u64 = 72 * 60 * 60;
@@ -1799,6 +1803,19 @@ impl Voting {
         let proposal_signal = U256::from_u128(&env, proposal_id as u128);
         let num_candidates_signal = U256::from_u32(&env, election_config.num_candidates);
 
+        // Extract relayer address from transaction signer (the one paying fees)
+        // In Soroban, this is typically the contract invoker, but we get it from the auth context
+        let relayer_address: Address = env.invoker().clone();
+        let relayer_signal = Self::address_to_u256(&env, &relayer_address);
+
+        // Validate relayer address is in BN254 scalar field
+        Self::assert_in_field(&env, &relayer_signal);
+
+        // Validate relayer address is non-zero
+        if relayer_signal == U256::from_u32(&env, 0) {
+            panic_with_error!(&env, VotingError::InvalidRelayerAddress);
+        }
+
         let pub_signals = soroban_sdk::vec![
             &env,
             root.clone(),
@@ -1807,6 +1824,7 @@ impl Voting {
             proposal_signal,
             vote_signal,
             num_candidates_signal,
+            relayer_signal,
         ];
 
         if !Self::verify_groth16(&env, &vk, &proof, &pub_signals) {
@@ -1981,6 +1999,18 @@ impl Voting {
         let proposal_signal = U256::from_u128(&env, proposal_id as u128);
         let num_candidates_signal = U256::from_u32(&env, election_config.num_candidates);
 
+        // Extract relayer address from transaction signer
+        let relayer_address: Address = env.invoker().clone();
+        let relayer_signal = Self::address_to_u256(&env, &relayer_address);
+
+        // Validate relayer address is in BLS12-381 scalar field
+        Self::assert_in_field_bls381(&env, &relayer_signal);
+
+        // Validate relayer address is non-zero
+        if relayer_signal == U256::from_u32(&env, 0) {
+            panic_with_error!(&env, VotingError::InvalidRelayerAddress);
+        }
+
         let pub_signals = soroban_sdk::vec![
             &env,
             root.clone(),
@@ -1989,6 +2019,7 @@ impl Voting {
             proposal_signal,
             vote_signal,
             num_candidates_signal,
+            relayer_signal,
         ];
 
         if !Self::verify_groth16_bls381(&env, &vk, &proof, &pub_signals) {
@@ -2123,6 +2154,14 @@ impl Voting {
         Self::bump_persistent(&env, &scoped_key);
         env.storage().persistent().remove(&legacy_key);
         true
+    }
+
+    /// Convert a Stellar address to a U256 field element
+    /// Hashes the address using Blake2-256 and converts to U256
+    fn address_to_u256(env: &Env, address: &Address) -> U256 {
+        let address_bytes = address.to_xdr(env);
+        let hash: BytesN<32> = env.crypto().sha256(&address_bytes);
+        U256::from_be_bytes(env, &hash.to_bytes(env))
     }
 
     /// Get tree contract address
