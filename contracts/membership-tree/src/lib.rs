@@ -9,13 +9,19 @@ mod poseidon_params_bls12_381;
 
 const SBT_CONTRACT: Symbol = symbol_short!("sbt");
 const REGISTRY: Symbol = symbol_short!("registry");
-// FIFO history of Merkle roots - older roots are evicted. See THREAT_MODEL.md for impact.
-const MAX_ROOT_HISTORY: u32 = 30;
+const VOTING_CONTRACT_KEY: Symbol = symbol_short!("voting");
+const DEFAULT_MAX_ROOTS: u32 = 30;
+const MIN_MAX_ROOTS: u32 = 10;
+const MAX_MAX_ROOTS: u32 = 100;
 // Circuit depth must match vote.circom. Supports ~262K members (2^18 = 262,144)
 const MAX_TREE_DEPTH: u32 = 18;
+// Per-member registration cooldown: minimum seconds a member must wait before
+// registering another commitment in the tree. Prevents tree spam from members
+// churning commitments (e.g. re-registering after reinstate) (#371).
+const MIN_REGISTRATION_INTERVAL_SECS: u64 = 3600;
 const ZEROS_CACHE: Symbol = symbol_short!("zeros");
 const ZEROS_CACHE_BLS: Symbol = symbol_short!("z_bls");
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const VERSION_KEY: Symbol = symbol_short!("ver");
 
 // TTL management: bump on every interaction to keep contract alive
@@ -169,6 +175,139 @@ impl MembershipTree {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
+
+    fn get_max_roots(env: &Env, dao_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MaxRoots(dao_id))
+            .unwrap_or(DEFAULT_MAX_ROOTS)
+    }
+
+    fn voting_contract(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&VOTING_CONTRACT_KEY)
+    }
+
+    /// Set the voting contract address for cross-contract root pinning checks.
+    /// Must be called by registry (deployer) after deployment.
+    pub fn set_voting_contract(env: Env, voting_contract: Address, registry: Address) {
+        Self::bump_instance(&env);
+        registry.require_auth();
+        let expected: Address = env
+            .storage()
+            .instance()
+            .get(&REGISTRY)
+            .unwrap_or_else(|| panic_with_error!(&env, TreeError::TreeNotInitialized));
+        if registry != expected {
+            panic_with_error!(&env, TreeError::NotAdmin);
+        }
+        env.storage()
+            .instance()
+            .set(&VOTING_CONTRACT_KEY, &voting_contract);
+    }
+
+    /// Configure MAX_ROOTS per DAO (range 10–100). Only DAO admin.
+    pub fn set_max_roots(env: Env, dao_id: u64, new_max: u32, admin: Address) {
+        Self::bump_instance(&env);
+        admin.require_auth();
+        let sbt_contract = Self::sbt_contract(&env);
+        let registry: Address = env.invoke_contract(
+            &sbt_contract,
+            &symbol_short!("registry"),
+            soroban_sdk::vec![&env],
+        );
+        let dao_admin: Address = env.invoke_contract(
+            &registry,
+            &symbol_short!("get_admin"),
+            soroban_sdk::vec![&env, dao_id.into_val(&env)],
+        );
+        if dao_admin != admin {
+            panic_with_error!(&env, TreeError::NotAdmin);
+        }
+        if new_max < MIN_MAX_ROOTS || new_max > MAX_MAX_ROOTS {
+            panic_with_error!(&env, TreeError::MaxRootsOutOfRange);
+        }
+        let key = DataKey::MaxRoots(dao_id);
+        env.storage().persistent().set(&key, &new_max);
+        Self::bump_persistent(&env, &key);
+    }
+
+    /// Get configured MAX_ROOTS for a DAO.
+    pub fn max_roots(env: Env, dao_id: u64) -> u32 {
+        Self::bump_instance(&env);
+        Self::get_max_roots(&env, dao_id)
+    }
+
+    /// Get current roots vector length for a DAO (used by frontend to compute
+    /// distance from FIFO eviction boundary for warning UX).
+    pub fn roots_len(env: Env, dao_id: u64) -> u32 {
+        Self::bump_instance(&env);
+        let roots_key = DataKey::Roots(dao_id);
+        let roots: Vec<U256> = env
+            .storage()
+            .persistent()
+            .get(&roots_key)
+            .unwrap_or_else(|| panic_with_error!(&env, TreeError::TreeNotInitialized));
+        roots.len()
+    }
+
+    /// Cross-contract safety check invoked before evicting a root.
+    /// - Fixed-mode active proposals whose eligible_root matches: BLOCK eviction
+    /// - Trailing-mode with at-risk root: emit AtRiskVoterAlert via voting contract
+    fn check_root_eviction_safety(
+        env: &Env,
+        dao_id: u64,
+        candidate_root: &U256,
+    ) {
+        let Some(voting_addr) = Self::voting_contract(env) else {
+            return;
+        };
+        // root_pin(root) returns true if any Active Fixed-mode proposal matches
+        let is_pinned: bool = env.invoke_contract(
+            &voting_addr,
+            &symbol_short!("root_pin"),
+            soroban_sdk::vec![
+                env,
+                dao_id.into_val(env),
+                candidate_root.clone().into_val(env),
+            ],
+        );
+        if is_pinned {
+            panic_with_error!(env, TreeError::RootPinnedByProposal);
+        }
+        // Ask voting contract to emit AtRiskVoterAlert for any Trailing-mode
+        // proposals whose eligible_root/earliest_idx touches this evicted root.
+        let _: () = env.invoke_contract(
+            &voting_addr,
+            &symbol_short!("chk_risk"),
+            soroban_sdk::vec![
+                env,
+                dao_id.into_val(env),
+                candidate_root.clone().into_val(env),
+            ],
+        );
+    }
+
+    /// Internal helper: perform the actual FIFO eviction and emit RootEvictedEvent.
+    /// Assumes caller already validated safety (check_root_eviction_safety).
+    fn evict_oldest_root(env: &Env, dao_id: u64, roots: &mut Vec<U256>) {
+        if let Some(evicted_root) = roots.get(0) {
+            let evicted_key = DataKey::RootIndex(dao_id, evicted_root.clone());
+            env.storage().persistent().remove(&evicted_key);
+            let mut new_roots = Vec::new(env);
+            for i in 1..roots.len() {
+                if let Some(r) = roots.get(i) {
+                    new_roots.push_back(r);
+                }
+            }
+            *roots = new_roots;
+            RootEvictedEvent {
+                dao_id,
+                evicted_root,
+                roots_len_after: roots.len(),
+            }
+            .publish(env);
+        }
     }
 
     /// Constructor: Initialize contract with SBT contract address
@@ -361,6 +500,27 @@ impl MembershipTree {
         Self::bump_persistent(env, &used_key);
     }
 
+    /// Enforce the per-member registration cooldown (#371): a member may not
+    /// register another commitment until MIN_REGISTRATION_INTERVAL_SECS have
+    /// elapsed since their previous registration in this DAO.
+    fn enforce_registration_cooldown(env: &Env, dao_id: u64, member: &Address) {
+        let key = DataKey::LastRegistrationAt(dao_id, member.clone());
+        if let Some(last) = env.storage().persistent().get::<_, u64>(&key) {
+            if env.ledger().timestamp() < last.saturating_add(MIN_REGISTRATION_INTERVAL_SECS) {
+                panic_with_error!(env, TreeError::RateLimited);
+            }
+        }
+    }
+
+    /// Record the ledger timestamp of a member's successful registration (#371).
+    fn record_registration(env: &Env, dao_id: u64, member: &Address) {
+        let key = DataKey::LastRegistrationAt(dao_id, member.clone());
+        env.storage()
+            .persistent()
+            .set(&key, &env.ledger().timestamp());
+        Self::bump_persistent(env, &key);
+    }
+
     /// Register a commitment from registry during DAO initialization
     /// This function is called by the registry contract during create_and_init_dao
     /// to automatically register the creator's commitment.
@@ -381,6 +541,7 @@ impl MembershipTree {
             panic_with_error!(&env, TreeError::TreeNotInitialized);
         }
 
+        Self::enforce_registration_cooldown(&env, dao_id, &member);
         Self::reserve_commitment(&env, dao_id, &commitment);
 
         let leaf_key = DataKey::LeafIndex(dao_id, commitment.clone());
@@ -441,6 +602,8 @@ impl MembershipTree {
             root_index,
         }
         .publish(&env);
+
+        Self::record_registration(&env, dao_id, &member);
     }
 
     /// Register a commitment with explicit caller (requires SBT membership)
@@ -459,6 +622,8 @@ impl MembershipTree {
         if !has_sbt {
             panic_with_error!(&env, TreeError::NoSbt);
         }
+
+        Self::enforce_registration_cooldown(&env, dao_id, &caller);
 
         // Check tree is initialized
         let depth_key = DataKey::TreeDepth(dao_id);
@@ -526,6 +691,8 @@ impl MembershipTree {
             root_index,
         }
         .publish(&env);
+
+        Self::record_registration(&env, dao_id, &caller);
     }
 
     /// Self-register a commitment in a public DAO (requires SBT membership)
@@ -563,6 +730,8 @@ impl MembershipTree {
         if !membership_open {
             panic_with_error!(&env, TreeError::NotOpenMembership);
         }
+
+        Self::enforce_registration_cooldown(&env, dao_id, &member);
 
         // Check tree is initialized
         let depth_key = DataKey::TreeDepth(dao_id);
@@ -630,6 +799,8 @@ impl MembershipTree {
             root_index,
         }
         .publish(&env);
+
+        Self::record_registration(&env, dao_id, &member);
     }
 
     /// Get current root for a DAO
@@ -724,6 +895,37 @@ impl MembershipTree {
             .unwrap_or_else(|| panic_with_error!(&env, TreeError::TreeNotInitialized));
         let root = Self::current_root(env, dao_id);
         (depth, next_index, root)
+    }
+
+    /// Returns the number of retained Merkle roots for this DAO.
+    /// Useful for UI warnings before the MAX_ROOT_HISTORY eviction window fills.
+    pub fn root_history_len(env: Env, dao_id: u64) -> u32 {
+        Self::bump_instance(&env);
+        let roots_key = DataKey::Roots(dao_id);
+        let roots: Vec<U256> = env
+            .storage()
+            .persistent()
+            .get(&roots_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        Self::bump_persistent(&env, &roots_key);
+        roots.len()
+    }
+
+    /// Returns the current anonymity-set size for a DAO, approximated by the
+    /// number of currently registered commitments in the tree.
+    pub fn anonymity_set_size(env: Env, dao_id: u64) -> u32 {
+        Self::bump_instance(&env);
+        let next_index: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextLeafIndex(dao_id))
+            .unwrap_or(0);
+        let depth_key = DataKey::TreeDepth(dao_id);
+        if !env.storage().persistent().has(&depth_key) {
+            return 0;
+        }
+        Self::bump_persistent(&env, &depth_key);
+        next_index
     }
 
     /// Get Merkle path for a specific leaf index
@@ -998,14 +1200,22 @@ impl MembershipTree {
         }
 
         let leaf_index_key = DataKey::LeafIndex(dao_id, commitment.clone());
-        let leaf_value_key = if let Some(index) = env.storage().persistent().get::<_, Option<u32>>(&leaf_index_key) {
+        let leaf_value_key = if let Some(index) = env
+            .storage()
+            .persistent()
+            .get::<_, Option<u32>>(&leaf_index_key)
+        {
             Some(DataKey::LeafValue(dao_id, index.unwrap_or(0)))
         } else {
             None
         };
 
         if let Some(key) = leaf_value_key {
-            let current_value: U256 = env.storage().persistent().get(&key).unwrap_or_else(|| U256::zero(&env));
+            let current_value: U256 = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or_else(|| U256::zero(&env));
             current_value == Self::zero_value(&env)
         } else {
             true
@@ -1054,19 +1264,11 @@ impl MembershipTree {
                 .get(&roots_key)
                 .unwrap_or_else(|| panic_with_error!(env, TreeError::TreeNotInitialized));
             roots.push_back(current_hash.clone());
-            if roots.len() > MAX_ROOT_HISTORY {
-                // Clean up RootIndex for evicted root
-                if let Some(evicted_root) = roots.get(0) {
-                    let evicted_key = DataKey::RootIndex(dao_id, evicted_root);
-                    env.storage().persistent().remove(&evicted_key);
+            if roots.len() > Self::get_max_roots(env, dao_id) {
+                if let Some(oldest) = roots.get(0) {
+                    Self::check_root_eviction_safety(env, dao_id, &oldest);
                 }
-                let mut new_roots = Vec::new(env);
-                for i in 1..roots.len() {
-                    if let Some(r) = roots.get(i) {
-                        new_roots.push_back(r);
-                    }
-                }
-                roots = new_roots;
+                Self::evict_oldest_root(env, dao_id, &mut roots);
             }
             env.storage().persistent().set(&roots_key, &roots);
             Self::bump_persistent(env, &roots_key);
@@ -1130,19 +1332,11 @@ impl MembershipTree {
         roots.push_back(current_hash.clone());
 
         // Maintain max roots cap (FIFO)
-        if roots.len() > MAX_ROOT_HISTORY {
-            // Clean up RootIndex for evicted root
-            if let Some(evicted_root) = roots.get(0) {
-                let evicted_key = DataKey::RootIndex(dao_id, evicted_root);
-                env.storage().persistent().remove(&evicted_key);
+        if roots.len() > Self::get_max_roots(env, dao_id) {
+            if let Some(oldest) = roots.get(0) {
+                Self::check_root_eviction_safety(env, dao_id, &oldest);
             }
-            let mut new_roots = Vec::new(env);
-            for i in 1..roots.len() {
-                if let Some(r) = roots.get(i) {
-                    new_roots.push_back(r);
-                }
-            }
-            roots = new_roots;
+            Self::evict_oldest_root(env, dao_id, &mut roots);
         }
 
         env.storage().persistent().set(&roots_key, &roots);
@@ -1242,19 +1436,11 @@ impl MembershipTree {
         roots.push_back(current_hash.clone());
 
         // Maintain max roots cap (FIFO)
-        if roots.len() > MAX_ROOT_HISTORY {
-            // Clean up RootIndex for evicted root
-            if let Some(evicted_root) = roots.get(0) {
-                let evicted_key = DataKey::RootIndex(dao_id, evicted_root);
-                env.storage().persistent().remove(&evicted_key);
+        if roots.len() > Self::get_max_roots(env, dao_id) {
+            if let Some(oldest) = roots.get(0) {
+                Self::check_root_eviction_safety(env, dao_id, &oldest);
             }
-            let mut new_roots = Vec::new(env);
-            for i in 1..roots.len() {
-                if let Some(r) = roots.get(i) {
-                    new_roots.push_back(r);
-                }
-            }
-            roots = new_roots;
+            Self::evict_oldest_root(env, dao_id, &mut roots);
         }
 
         env.storage().persistent().set(&roots_key, &roots);

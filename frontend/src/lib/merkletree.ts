@@ -37,7 +37,8 @@ let zeroCacheSha3: string[] | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getPoseidon(): Promise<any> {
   if (!poseidonCache) {
-    poseidonCache = await buildPoseidon();
+    const circomlibjs = await import("circomlibjs");
+    poseidonCache = await circomlibjs.buildPoseidon();
   }
   return poseidonCache;
 }
