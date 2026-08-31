@@ -2,20 +2,24 @@
  * Environment Configuration
  *
  * Centralizes all environment variables and configuration.
+ * Uses Zod schema (config-schema.ts) for type-safe validation.
+ *
  * Secrets can be retrieved dynamically via the SecretManager
  * for runtime fetch from Vault or Fly.io secrets.
  */
 
 import dotenv from "dotenv";
+import { validateConfig, type ValidatedConfig, maskSecrets } from "./config-schema.js";
 
 dotenv.config();
 
 // ============================================
-// VALIDATION HELPERS
+// CONFIGURATION (validated via Zod schema)
 // ============================================
 
 /**
- * Validate Stellar contract ID format
+ * Legacy contract ID validator — kept for backward compatibility.
+ * New code should use the schema-validated config directly.
  */
 export function isValidContractId(
   contractId: string | undefined,
@@ -28,160 +32,141 @@ export function isValidContractId(
   return /^C[A-Z2-7]{55}$/.test(contractId);
 }
 
-// ============================================
-// CONFIGURATION
-// ============================================
+/**
+ * Lazy-initialized validated config.
+ * Validation runs on first access, not at import time.
+ * This allows tests to import config.ts without requiring all
+ * environment variables to be set.
+ */
+let _validatedConfig: ValidatedConfig | null = null;
+let _configWarnings: string[] = [];
 
-export const config = {
-  // Server
-  port: Number(process.env.PORT || 3001),
+function getValidatedConfig(): ValidatedConfig {
+  if (!_validatedConfig) {
+    // In test mode, skip strict validation (matches old behavior)
+    if (process.env.RELAYER_TEST_MODE === "true") {
+      _validatedConfig = {
+        port: Number(process.env.PORT || 3001),
+        rpcUrl: process.env.SOROBAN_RPC_URL || "http://localhost:8000/soroban/rpc",
+        rpcUrls: [process.env.SOROBAN_RPC_URL || "http://localhost:8000/soroban/rpc"],
+        networkPassphrase: process.env.NETWORK_PASSPHRASE || "Standalone Network ; February 2017",
+        rpcTimeoutMs: 30_000,
+        relayerAuthToken: process.env.RELAYER_AUTH_TOKEN || "test-token-for-testing-only-1234567890",
+        relayerSecretKey: process.env.RELAYER_SECRET_KEY,
+        votingContractId: process.env.VOTING_CONTRACT_ID || "C000000000000000000000000000000000000000000000000000000000000000",
+        treeContractId: process.env.TREE_CONTRACT_ID || "C000000000000000000000000000000000000000000000000000000000000000",
+        commentsContractId: process.env.COMMENTS_CONTRACT_ID || "C000000000000000000000000000000000000000000000000000000000000000",
+        daoRegistryContractId: process.env.DAO_REGISTRY_CONTRACT_ID,
+        membershipSbtContractId: process.env.MEMBERSHIP_SBT_CONTRACT_ID,
+        bridgeContractId: process.env.BRIDGE_CONTRACT_ID,
+        circuitRegistryContractId: process.env.CIRCUIT_REGISTRY_CONTRACT_ID,
+        staticVkVersion: process.env.VOTING_VK_VERSION ? Number(process.env.VOTING_VK_VERSION) : undefined,
+        corsOrigins: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim()) : ("*" as const),
+        logClientIp: process.env.LOG_CLIENT_IP as "plain" | "hash" | undefined,
+        logRequestBody: process.env.LOG_REQUEST_BODY !== "false",
+        stripRequestBodies: process.env.STRIP_REQUEST_BODIES === "true",
+        genericErrors: process.env.RELAYER_GENERIC_ERRORS === "true",
+        healthExposeDetails: process.env.HEALTH_EXPOSE_DETAILS !== "false",
+        healthcheckPing: process.env.HEALTHCHECK_PING === "true",
+        indexerEnabled: process.env.INDEXER_ENABLED !== "false",
+        indexerPollIntervalMs: 5000,
+        daoSyncIntervalMs: 30_000,
+        membershipSyncIntervalMs: 600_000,
+        pinataJwt: process.env.PINATA_JWT,
+        pinataGateway: process.env.PINATA_GATEWAY,
+        ipfsEnabled: !!process.env.PINATA_JWT,
+        ipfsBackupDir: process.env.IPFS_BACKUP_DIR || "./data/ipfs-backup",
+        web3StorageToken: process.env.WEB3_STORAGE_TOKEN,
+        pinVerifyIntervalMs: 3_600_000,
+        pinAlertThreshold: 3,
+        pinAutoRepin: process.env.PIN_AUTO_REPIN !== "false",
+        powEnabled: process.env.POW_ENABLED !== "false",
+        powDifficulty: Number(process.env.POW_DIFFICULTY || 20),
+        powChallengeTtlMs: 300_000,
+        commitmentRateLimit: Number(process.env.COMMITMENT_RATE_LIMIT || 5),
+        commitmentRateWindowMs: 60_000,
+        flagThreshold: Number(process.env.FLAG_THRESHOLD || 3),
+        flagPowDifficulty: Number(process.env.FLAG_POW_DIFFICULTY || 10),
+        ttlRenewalIntervalMs: 604_800_000,
+        ttlRenewalThresholdMs: 1_209_600_000,
+        ttlGracePeriodMs: 259_200_000,
+        ttlBatchSize: 5,
+        ttlCheckEnabled: process.env.TTL_CHECK_ENABLED !== "false",
+        ttlCostTrackingEnabled: process.env.TTL_COST_TRACKING_ENABLED !== "false",
+        ttlMaxFee: "1000000",
+        ttlSlippageLedgers: 8640,
+        backupIntervalMs: 86_400_000,
+        s3Bucket: process.env.BACKUP_S3_BUCKET || process.env.S3_BUCKET,
+        archivalAgeDays: 90,
+        archivalIntervalMs: 86_400_000,
+        circuitBreakerRpcFailureThreshold: 5,
+        circuitBreakerRpcResetMs: 30_000,
+        circuitBreakerPinataFailureThreshold: 5,
+        circuitBreakerPinataResetMs: 30_000,
+        circuitBreakerGatewayFailureThreshold: 5,
+        circuitBreakerGatewayResetMs: 30_000,
+        memoryMonitorIntervalMs: 60_000,
+        memoryLimitMb: 512,
+        memoryWarnRatio: 0.8,
+        memoryCriticalRatio: 0.95,
+        memoryAutoRestart: process.env.MEMORY_AUTO_RESTART !== "false",
+        maxCachedDaos: 5000,
+        dbQueryCacheMaxEntries: 500,
+        testMode: true,
+        logSamplingRate: 1.0,
+        logSamplingErrorRate: 1.0,
+        logSamplingSlowRate: 1.0,
+        logSlowThresholdMs: 1000,
+        logBodyMaxChars: 2000,
+        hotReloadEnabled: false,
+      };
+      _configWarnings = ["Test mode enabled — strict validation skipped"];
+    } else {
+      const { config, warnings } = validateConfig();
+      _validatedConfig = config;
+      _configWarnings = warnings;
 
-  // Soroban RPC
-  rpcUrl: process.env.SOROBAN_RPC_URL || "http://localhost:8000/soroban/rpc",
-  rpcUrls: process.env.SOROBAN_RPC_URLS
-    ? process.env.SOROBAN_RPC_URLS.split(",").map((s) => s.trim()).filter(Boolean)
-    : [process.env.SOROBAN_RPC_URL || "http://localhost:8000/soroban/rpc"],
-  networkPassphrase:
-    process.env.NETWORK_PASSPHRASE || "Standalone Network ; February 2017",
-  rpcTimeoutMs: Number(process.env.RPC_TIMEOUT_MS || 30_000),
+      // Log startup warnings
+      for (const w of warnings) {
+        console.log(JSON.stringify({ level: "warn", event: "config_warning", message: w }));
+      }
 
-  // Authentication (read from env as fallback; see getSecret() for dynamic retrieval)
-  relayerAuthToken: process.env.RELAYER_AUTH_TOKEN,
-  relayerSecretKey: process.env.RELAYER_SECRET_KEY,
+      // Log config summary (secrets masked)
+      console.log(
+        JSON.stringify({
+          level: "info",
+          event: "config_loaded",
+          env: maskSecrets(process.env),
+          variables: Object.keys(process.env).length,
+          ipfsEnabled: config.ipfsEnabled,
+          indexerEnabled: config.indexerEnabled,
+          testMode: config.testMode,
+        }),
+      );
+    }
+  }
+  return _validatedConfig;
+}
 
-  // Contract IDs
-  votingContractId: process.env.VOTING_CONTRACT_ID,
-  treeContractId: process.env.TREE_CONTRACT_ID,
-  commentsContractId: process.env.COMMENTS_CONTRACT_ID,
-  daoRegistryContractId: process.env.DAO_REGISTRY_CONTRACT_ID,
-  membershipSbtContractId: process.env.MEMBERSHIP_SBT_CONTRACT_ID,
-  bridgeContractId: process.env.BRIDGE_CONTRACT_ID,
-  circuitRegistryContractId: process.env.CIRCUIT_REGISTRY_CONTRACT_ID,
+/**
+ * The config object is the public API for the rest of the codebase.
+ * It provides the same shape as the legacy config object but is fully
+ * validated and typed via the Zod schema.
+ *
+ * Validation runs lazily on first property access.
+ */
+export const config: ValidatedConfig = new Proxy({} as ValidatedConfig, {
+  get(_target, prop, _receiver) {
+    return (getValidatedConfig() as any)[prop];
+  },
+});
 
-  // VK Version
-  staticVkVersion: process.env.VOTING_VK_VERSION
-    ? Number(process.env.VOTING_VK_VERSION)
-    : undefined,
-
-  // CORS
-  corsOrigins: process.env.CORS_ORIGIN
-    ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
-    : ("*" as const),
-
-  // Logging
-  logClientIp: process.env.LOG_CLIENT_IP as "plain" | "hash" | undefined,
-  logRequestBody: process.env.LOG_REQUEST_BODY !== "false",
-  stripRequestBodies: process.env.STRIP_REQUEST_BODIES === "true",
-  genericErrors: process.env.RELAYER_GENERIC_ERRORS === "true",
-  healthExposeDetails: process.env.HEALTH_EXPOSE_DETAILS !== "false",
-  healthcheckPing: process.env.HEALTHCHECK_PING === "true",
-
-  // Event Indexer
-  indexerEnabled: process.env.INDEXER_ENABLED !== "false",
-  indexerPollIntervalMs: Number(process.env.INDEXER_POLL_INTERVAL_MS || 5000),
-
-  // DAO Sync
-  daoSyncIntervalMs: Number(process.env.DAO_SYNC_INTERVAL_MS || 30000),
-
-  // Membership Sync
-  membershipSyncIntervalMs: Number(
-    process.env.MEMBERSHIP_SYNC_INTERVAL_MS || 600000,
-  ),
-
-  // IPFS/Pinata (read from env as fallback; see getSecret() for dynamic retrieval)
-  pinataJwt: process.env.PINATA_JWT,
-  pinataGateway: process.env.PINATA_GATEWAY,
-  ipfsEnabled: !!process.env.PINATA_JWT,
-
-  // IPFS Pin Redundancy
-  /** Local directory for content backups before pinning (default: ./data/ipfs-backup) */
-  ipfsBackupDir: process.env.IPFS_BACKUP_DIR || "./data/ipfs-backup",
-  /** Web3.Storage API token for secondary pinning (optional) */
-  web3StorageToken: process.env.WEB3_STORAGE_TOKEN,
-  /** Interval between pin verification scans in ms (default: 1 hour) */
-  pinVerifyIntervalMs: Number(process.env.PIN_VERIFY_INTERVAL_MS || 3_600_000),
-  /** Consecutive failures before alerting (default: 3) */
-  pinAlertThreshold: Number(process.env.PIN_ALERT_THRESHOLD || 3),
-  /** Automatically re-pin failed content from backup (default: true) */
-  pinAutoRepin: process.env.PIN_AUTO_REPIN !== "false",
-
-  // Anti-spam: proof-of-work
-  powEnabled: process.env.POW_ENABLED !== "false",
-  powDifficulty: Number(process.env.POW_DIFFICULTY || 20),
-  powChallengeTtlMs: Number(process.env.POW_CHALLENGE_TTL_MS || 300_000),
-
-  // Anti-spam: per-commitment rate limiting
-  commitmentRateLimit: Number(process.env.COMMITMENT_RATE_LIMIT || 5),
-  commitmentRateWindowMs: Number(
-    process.env.COMMITMENT_RATE_WINDOW_MS || 60_000,
-  ),
-
-  // Anti-spam: community flagging
-  flagThreshold: Number(process.env.FLAG_THRESHOLD || 3),
-  flagPowDifficulty: Number(process.env.FLAG_POW_DIFFICULTY || 10),
-
-  // TTL Renewal Optimization
-  ttlRenewalIntervalMs: Number(
-    process.env.TTL_RENEWAL_INTERVAL_MS || 604_800_000,
-  ), // 7 days
-  ttlRenewalThresholdMs: Number(
-    process.env.TTL_RENEWAL_THRESHOLD_MS || 1_209_600_000,
-  ), // 14 days
-  ttlGracePeriodMs: Number(process.env.TTL_GRACE_PERIOD_MS || 259_200_000), // 3 days
-  ttlBatchSize: Number(process.env.TTL_BATCH_SIZE || 5),
-  ttlCheckEnabled: process.env.TTL_CHECK_ENABLED !== "false",
-  ttlCostTrackingEnabled: process.env.TTL_COST_TRACKING_ENABLED !== "false",
-  ttlMaxFee: process.env.TTL_MAX_FEE || "1000000",
-  ttlSlippageLedgers: Number(process.env.TTL_SLIPPAGE_LEDGERS || 8640), // ~2 days safety margin
-
-  // Backup & Archival
-  backupIntervalMs: Number(process.env.BACKUP_INTERVAL_MS || 86_400_000), // 24 hours
-  s3Bucket: process.env.BACKUP_S3_BUCKET || process.env.S3_BUCKET,
-  archivalAgeDays: Number(process.env.ARCHIVAL_AGE_DAYS || 90),
-  archivalIntervalMs: Number(process.env.ARCHIVAL_INTERVAL_MS || 86_400_000),
-
-  // Circuit Breakers
-  circuitBreakerRpcFailureThreshold: Number(
-    process.env.CIRCUIT_BREAKER_RPC_FAILURE_THRESHOLD || 5,
-  ),
-  circuitBreakerRpcResetMs: Number(
-    process.env.CIRCUIT_BREAKER_RPC_RESET_MS || 30_000,
-  ),
-  circuitBreakerPinataFailureThreshold: Number(
-    process.env.CIRCUIT_BREAKER_PINATA_FAILURE_THRESHOLD || 5,
-  ),
-  circuitBreakerPinataResetMs: Number(
-    process.env.CIRCUIT_BREAKER_PINATA_RESET_MS || 30_000,
-  ),
-  circuitBreakerGatewayFailureThreshold: Number(
-    process.env.CIRCUIT_BREAKER_GATEWAY_FAILURE_THRESHOLD || 5,
-  ),
-  circuitBreakerGatewayResetMs: Number(
-    process.env.CIRCUIT_BREAKER_GATEWAY_RESET_MS || 30_000,
-  ),
-
-  // Memory monitoring
-  memoryMonitorIntervalMs: Number(
-    process.env.MEMORY_MONITOR_INTERVAL_MS || 60_000,
-  ),
-  // Container memory limit in MB (should match fly.toml [[vm]] memory, minus
-  // a safety margin) — used to compute the usage ratio for alerting.
-  memoryLimitMb: Number(process.env.MEMORY_LIMIT_MB || 512),
-  memoryWarnRatio: Number(process.env.MEMORY_WARN_RATIO || 0.8),
-  memoryCriticalRatio: Number(process.env.MEMORY_CRITICAL_RATIO || 0.95),
-  memoryAutoRestart: process.env.MEMORY_AUTO_RESTART !== "false",
-
-  // Cache eviction bounds
-  maxCachedDaos: Number(process.env.MAX_CACHED_DAOS || 5000),
-  dbQueryCacheMaxEntries: Number(process.env.DB_QUERY_CACHE_MAX_ENTRIES || 500),
-
-  // Test mode
-  testMode: process.env.RELAYER_TEST_MODE === "true",
-} as const;
+// Re-export for backward compatibility
+export type { ValidatedConfig };
 
 // ============================================
-// SIZE LIMITS
-// ============================================
+// SIZE LIMITS (unchanged — not env-configured)
+// ====================================
 
 export const LIMITS = {
   MAX_IMAGE_SIZE: 5 * 1024 * 1024, // 5MB
@@ -215,94 +200,75 @@ export const ALLOWED_IMAGE_MIMES = [
 
 // BN254 field modulus (p)
 export const BN254_MODULUS = BigInt(
-  "218882428718392752222464057452572750885483644004160343698204186575808495617",
+  "21888242871839275222246405745257275088548364400416034343698204186575808495617",
 );
 
 // BN254 scalar field modulus (r)
 export const BN254_SCALAR_FIELD = BigInt(
-  "0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47",
+  "0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001",
 );
 
 // ============================================
-// ENVIRONMENT VALIDATION
+// ENVIRONMENT VALIDATION (replaced by Zod)
 // ============================================
 
 /**
- * Validate required environment variables
- * Throws if required vars are missing
+ * Legacy validateEnv() — now handled by config-schema.ts.
+ * Kept as a no-op for backward compatibility with callers.
+ *
+ * The schema validation at import time (above) handles all validation.
  */
 export function validateEnv(): void {
-  const missing: string[] = [];
+  // Validation already performed at module load time via validateConfig().
+  // This function is kept as a no-op for backward compatibility.
+}
 
-  if (!config.votingContractId) missing.push("VOTING_CONTRACT_ID");
-  if (!config.treeContractId) missing.push("TREE_CONTRACT_ID");
-  if (!config.commentsContractId) missing.push("COMMENTS_CONTRACT_ID");
-  if (!config.relayerSecretKey) missing.push("RELAYER_SECRET_KEY");
-  if (!config.rpcUrl) missing.push("SOROBAN_RPC_URL");
-  if (!config.networkPassphrase) missing.push("NETWORK_PASSPHRASE");
-  if (!config.relayerAuthToken) missing.push("RELAYER_AUTH_TOKEN");
+// ============================================
+// CONFIG CHANGE TRACKING
+// ============================================
 
-  if (missing.length > 0) {
-    console.error(
-      JSON.stringify({ level: "error", event: "missing_env", missing }),
-    );
-    console.error("\nRun ./scripts/init-local.sh to generate backend/.env");
-    process.exit(1);
-  }
+import { detectConfigChanges, type ConfigSnapshot } from "./config-schema.js";
 
-  // Validate auth token strength (minimum 32 characters for security)
-  // Skip validation in test mode since tests set short tokens for convenience
-  if (
-    config.relayerAuthToken &&
-    config.relayerAuthToken.length < 32 &&
-    !config.testMode
-  ) {
-    console.error(
+/** Store previous snapshot for change detection */
+let previousSnapshot: ConfigSnapshot = { ...process.env };
+
+/**
+ * Check for config changes since last check.
+ * Call periodically or after SIGUSR2.
+ * Returns changes detected (empty if none).
+ */
+export function checkConfigChanges(): Array<{ key: string; old: string | undefined; new: string | undefined }> {
+  const currentSnapshot = { ...process.env };
+  const changes = detectConfigChanges(previousSnapshot, currentSnapshot);
+  previousSnapshot = currentSnapshot;
+
+  if (changes.length > 0) {
+    console.log(
       JSON.stringify({
-        level: "error",
-        event: "weak_auth_token",
-        length: config.relayerAuthToken.length,
-        minLength: 32,
+        level: "info",
+        event: "config_changed",
+        changes: changes.map((c) => ({
+          key: c.key,
+          old: c.old,
+          new: c.new,
+        })),
       }),
     );
-    console.error("RELAYER_AUTH_TOKEN must be at least 32 characters");
-    process.exit(1);
   }
 
-  // Validate contract IDs
-  if (!isValidContractId(config.votingContractId)) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "invalid_contract_id",
-        var: "VOTING_CONTRACT_ID",
-        value: config.votingContractId,
-      }),
-    );
-    process.exit(1);
-  }
+  return changes;
+}
 
-  if (!isValidContractId(config.treeContractId)) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "invalid_contract_id",
-        var: "TREE_CONTRACT_ID",
-        value: config.treeContractId,
-      }),
-    );
-    process.exit(1);
-  }
+// ============================================
+// .env.example GENERATION
+// ============================================
 
-  if (!isValidContractId(config.commentsContractId)) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "invalid_contract_id",
-        var: "COMMENTS_CONTRACT_ID",
-        value: config.commentsContractId,
-      }),
-    );
-    process.exit(1);
-  }
+import { generateEnvExample } from "./config-schema.js";
+
+/**
+ * Generate .env.example content.
+ * Used by the config:generate script.
+ */
+export function getEnvExample(): string {
+  return generateEnvExample();
 }

@@ -19,7 +19,9 @@
     "migrate:dry-run": "tsx src/services/migrate.ts dry-run",
     "docs:generate": "RELAYER_TEST_MODE=true tsx scripts/generate-openapi.ts && npm run docs:types",
     "docs:check": "RELAYER_TEST_MODE=true tsx scripts/generate-openapi.ts --check",
-    "docs:types": "openapi-typescript openapi.json -o src/generated/api-types.ts"
+    "docs:types": "openapi-typescript openapi.json -o src/generated/api-types.ts",
+    "config:generate": "tsx scripts/generate-env-example.ts",
+    "config:check": "tsx scripts/generate-env-example.ts --check 2>&1 || (echo \"\n.env.example is out of sync! Run: npm run config:generate\" && exit 1)"
   },
   "keywords": [
     "stellar",

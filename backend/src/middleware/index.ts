@@ -6,7 +6,7 @@
 
 export { authGuard, extractAuthToken } from "./auth.js";
 export { csrfGuard } from "./csrf.js";
-export { requestLogger } from "./logging.js";
+export { requestLogger, logMetricsEndpoint } from "./logging.js";
 export { errorHandler } from "./errorHandler.js";
 export {
   voteLimiter,
