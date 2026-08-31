@@ -71,6 +71,11 @@ const INSTANCE_TTL_THRESHOLD: u32 = 120_960; // ~7 days
 const INSTANCE_TTL_EXTEND: u32 = 535_680; // ~31 days
 const PERSISTENT_TTL_THRESHOLD: u32 = 120_960;
 const PERSISTENT_TTL_EXTEND: u32 = 535_680;
+// Nullifiers are Temporary: auto-expire after proposal.end_time + grace period
+// 259_200 ledgers @ ~5s/ledger = 72 hours grace for late-arriving txns
+const NULLIFIER_GRACE_LEDGERS: u32 = 259_200;
+const TEMPORARY_TTL_THRESHOLD: u32 = 51_840; // ~3 days
+const TEMPORARY_TTL_EXTEND_BASE: u32 = 259_200; // 72h base, + end_time offset
 
 #[contracterror]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -309,50 +314,8 @@ pub enum DataKey {
     UpgradeMigration(u32),
     /// Rollback marker by rolled-back contract version.
     UpgradeRollback(u32),
-
-    // ── Sybil-resistance layer (#301) ──────────────────────────────────────
-    // Appended at the end so existing storage discriminants stay stable.
-    /// Weighted tally: (dao_id, proposal_id) -> WeightedTally
-    WeightedTally(u64, u64),
-    /// Per-election Sybil weight cap: (dao_id, proposal_id) -> u32
-    SybilWeightCap(u64, u64),
-    /// Anchored eligibility-attestation root the weighted-vote circuit proves
-    /// against: (dao_id, proposal_id) -> U256
-    AttestationRoot(u64, u64),
-    /// Sybil-weighted vote VK: dao_id -> VerificationKey
-    SybilVotingKey(u64),
-
-    // ── VDF-gated commit–reveal (#302) ─────────────────────────────────────
-    /// Commit–reveal schedule: (dao_id, proposal_id) -> CommitRevealConfig
-    CommitRevealConfig(u64, u64),
-    /// Published vote commitment: (dao_id, proposal_id, nullifier) -> BytesN<32>
-    VoteCommit(u64, u64, U256),
-    /// Reveal marker: (dao_id, proposal_id, nullifier) -> bool
-    VoteRevealed(u64, u64, U256),
-    /// Number of commitments accepted: (dao_id, proposal_id) -> u64
-    VoteCommitCount(u64, u64),
-    /// Commit-phase eligibility VK: dao_id -> VerificationKey
-    CommitVotingKey(u64),
-
-    // ── Anonymous delegation (#304) ────────────────────────────────────────
-    /// Registered delegation: (dao_id, proposal_id, commitment) -> DelegationRecord
-    Delegation(u64, u64, U256),
-    /// Delegation spend marker: (dao_id, proposal_id, delegation_nullifier) -> bool
-    DelegationNullifier(u64, u64, U256),
-    /// Reclaim spend marker: (dao_id, proposal_id, reclaim_nullifier) -> bool
-    ReclaimNullifier(u64, u64, U256),
-    /// Delegation accumulator root: (dao_id, proposal_id) -> U256
-    DelegationRoot(u64, u64),
-    /// Registered delegation count: (dao_id, proposal_id) -> u64
-    DelegationCount(u64, u64),
-    /// Votes cast via delegation: (dao_id, proposal_id) -> u64
-    DelegatedVoteCount(u64, u64),
-    /// Delegation verification keys: dao_id -> VerificationKey, per circuit role
-    DelegationRegisterVk(u64),
-    DelegationVoteVk(u64),
-    DelegationRevokeVk(u64),
-    /// Whether delegation is enabled for an election: (dao_id, proposal_id) -> bool
-    DelegationEnabled(u64, u64),
+    /// Proposal end time snapshot for computing correct Temporary nullifier TTL
+    ProposalEndTime(u64, u64), // (dao_id, proposal_id) -> u64 (end_time timestamp)
 }
 
 /// A single quadratic-voting ballot as stored on-chain.
@@ -621,6 +584,16 @@ pub struct VoteEvent {
 
 #[soroban_sdk::contractevent]
 #[derive(Clone, Debug, PartialEq)]
+pub struct AtRiskVoterAlert {
+    #[topic]
+    pub dao_id: u64,
+    pub at_risk_root: U256,
+    pub proposal_id: u64,
+    pub deadline: u64,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ContractUpgraded {
     pub from: u32,
     pub to: u32,
@@ -863,6 +836,36 @@ impl Voting {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
+
+    fn bump_temporary<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
+        env.storage()
+            .temporary()
+            .extend_ttl(key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_EXTEND_BASE);
+    }
+
+    /// Bump nullifier TTL with proposal-end-time-aware extend amount.
+    /// Temporary storage lives until `end_time + NULLIFIER_GRACE_LEDGERS`.
+    /// For proposals with no end_time (end_time=0) use the base 72h window.
+    fn bump_nullifier_ttl<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(
+        env: &Env,
+        key: &K,
+        dao_id: u64,
+        proposal_id: u64,
+    ) {
+        let end_time = Self::get_proposal_end_time_internal(env, dao_id, proposal_id);
+        let ledger_timestamp = env.ledger().timestamp();
+        let ttl_extend: u32 = if end_time == 0 {
+            TEMPORARY_TTL_EXTEND_BASE
+        } else {
+            let remaining_secs = end_time.saturating_sub(ledger_timestamp);
+            let remaining_ledgers: u32 = (remaining_secs / 5).try_into().unwrap_or(u32::MAX);
+            remaining_ledgers.saturating_add(NULLIFIER_GRACE_LEDGERS)
+        };
+        let ttl_extend = ttl_extend.max(TEMPORARY_TTL_EXTEND_BASE);
+        env.storage()
+            .temporary()
+            .extend_ttl(key, TEMPORARY_TTL_THRESHOLD, ttl_extend);
     }
 
     /// Constructor: Initialize contract with MembershipTree address
@@ -1747,6 +1750,12 @@ impl Voting {
         env.storage().persistent().set(&curve_key, &curve_id);
         Self::bump_persistent(&env, &curve_key);
 
+        // Cache end_time for Temporary nullifier TTL computation
+        // Stored in Persistent (immutable after creation) so ttl.ts can look it up
+        let end_time_key = DataKey::ProposalEndTime(dao_id, proposal_id);
+        env.storage().persistent().set(&end_time_key, &end_time);
+        Self::bump_persistent(&env, &end_time_key);
+
         ProposalEvent {
             dao_id,
             proposal_id,
@@ -1884,7 +1893,7 @@ impl Voting {
         // Check nullifier hasn't been used for THIS election (dao_id, proposal_id).
         // Election-scoped storage prevents cross-election DoS from a flat namespace (#64).
         let null_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
-        if env.storage().persistent().has(&null_key) {
+        if env.storage().temporary().has(&null_key) {
             panic_with_error!(&env, VotingError::NullifierUsed);
         }
 
@@ -1914,8 +1923,8 @@ impl Voting {
         // ── cross-contract calls or proof verification. This prevents      ──
         // ── double-vote reentrancy attacks even if the execution model     ──
         // ── allows reentrant calls.                                       ──
-        env.storage().persistent().set(&null_key, &true);
-        Self::bump_persistent(&env, &null_key);
+        env.storage().temporary().set(&null_key, &true);
+        Self::bump_nullifier_ttl(&env, &null_key, dao_id, proposal_id);
 
         // Verify root based on vote mode
         // (May involve cross-contract calls to tree contract in Trailing mode)
@@ -2138,7 +2147,7 @@ impl Voting {
         }
 
         let null_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
-        if env.storage().persistent().has(&null_key) {
+        if env.storage().temporary().has(&null_key) {
             panic_with_error!(&env, VotingError::NullifierUsed);
         }
 
@@ -2159,8 +2168,8 @@ impl Voting {
 
         // ── CHECKS-EFFECTS-INTERACTIONS: Mark nullifier as used BEFORE ──
         // ── cross-contract calls or proof verification.                   ──
-        env.storage().persistent().set(&null_key, &true);
-        Self::bump_persistent(&env, &null_key);
+        env.storage().temporary().set(&null_key, &true);
+        Self::bump_nullifier_ttl(&env, &null_key, dao_id, proposal_id);
 
         match proposal.vote_mode {
             VoteMode::Fixed => {
@@ -2350,6 +2359,77 @@ impl Voting {
             .unwrap_or(0)
     }
 
+    /// Cross-contract query: return true if `candidate_root` is the eligible_root
+    /// of any Active Fixed-mode proposal. Used by membership-tree to block FIFO
+    /// root eviction when a Fixed snapshot is still being voted against.
+    pub fn root_pin(env: Env, dao_id: u64, candidate_root: U256) -> bool {
+        Self::bump_instance(&env);
+        let count = Self::proposal_count(env.clone(), dao_id);
+        for id in 0..count {
+            let proposal_id = id + 1;
+            let key = DataKey::Proposal(dao_id, proposal_id);
+            if let Some(proposal) = env.storage().persistent().get::<_, ProposalInfo>(&key) {
+                if proposal.state == ProposalState::Active
+                    && proposal.vote_mode == VoteMode::Fixed
+                    && proposal.eligible_root == candidate_root
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Cross-contract hook: emit [`AtRiskVoterAlert`] events for every Active
+    /// Trailing-mode proposal whose earliest_root_index allows the candidate
+    /// root (i.e. voters with proofs against this root could still cast valid
+    /// votes). Called by membership-tree right before FIFO eviction.
+    pub fn chk_risk(env: Env, dao_id: u64, candidate_root: U256) {
+        Self::bump_instance(&env);
+        let count = Self::proposal_count(env.clone(), dao_id);
+        let now = env.ledger().timestamp();
+        for id in 0..count {
+            let proposal_id = id + 1;
+            let key = DataKey::Proposal(dao_id, proposal_id);
+            if let Some(proposal) = env.storage().persistent().get::<_, ProposalInfo>(&key) {
+                if proposal.state == ProposalState::Active
+                    && proposal.vote_mode == VoteMode::Trailing
+                {
+                    let deadline = if proposal.end_time == 0 {
+                        now.saturating_add(72 * 60 * 60)
+                    } else {
+                        proposal.end_time
+                    };
+                    AtRiskVoterAlert {
+                        dao_id,
+                        at_risk_root: candidate_root.clone(),
+                        proposal_id,
+                        deadline,
+                    }
+                    .publish(&env);
+                }
+            }
+        }
+    }
+
+    /// Read proposal end_time from cache (written at proposal creation).
+    /// Returns 0 if proposal has no end_time (never closes) or is unknown.
+    /// TTL-aware backend helpers use this to skip renewal of Temporary
+    /// nullifier records whose proposal voting window has closed + grace elapsed.
+    pub fn get_proposal_end_time(env: Env, dao_id: u64, proposal_id: u64) -> u64 {
+        Self::bump_instance(&env);
+        Self::get_proposal_end_time_internal(&env, dao_id, proposal_id)
+    }
+
+    /// Internal version of get_proposal_end_time (avoids double bump_instance).
+    #[inline(always)]
+    fn get_proposal_end_time_internal(env: &Env, dao_id: u64, proposal_id: u64) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ProposalEndTime(dao_id, proposal_id))
+            .unwrap_or(0)
+    }
+
     /// Check if a nullifier has been used for a specific election.
     ///
     /// Requires election identity `(dao_id, proposal_id)` — never queries a
@@ -2357,7 +2437,7 @@ impl Voting {
     pub fn is_nullifier_used(env: Env, dao_id: u64, proposal_id: u64, nullifier: U256) -> bool {
         Self::bump_instance(&env);
         let key = storage::nullifier_used_key(dao_id, proposal_id, nullifier);
-        env.storage().persistent().has(&key)
+        env.storage().temporary().has(&key)
     }
 
     /// Verify a voter receipt by checking if the nullifier was recorded
@@ -2403,8 +2483,8 @@ impl Voting {
         }
 
         let scoped_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier);
-        env.storage().persistent().set(&scoped_key, &true);
-        Self::bump_persistent(&env, &scoped_key);
+        env.storage().temporary().set(&scoped_key, &true);
+        Self::bump_nullifier_ttl(&env, &scoped_key, dao_id, proposal_id);
         env.storage().persistent().remove(&legacy_key);
         true
     }
@@ -2738,7 +2818,7 @@ impl Voting {
         }
 
         let null_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
-        if env.storage().persistent().has(&null_key) {
+        if env.storage().temporary().has(&null_key) {
             panic_with_error!(&env, VotingError::NullifierUsed);
         }
 
@@ -2871,8 +2951,8 @@ impl Voting {
             panic_with_error!(&env, VotingError::InvalidProof);
         }
 
-        env.storage().persistent().set(&null_key, &true);
-        Self::bump_persistent(&env, &null_key);
+        env.storage().temporary().set(&null_key, &true);
+        Self::bump_nullifier_ttl(&env, &null_key, dao_id, proposal_id);
 
         if vote_choice {
             proposal.yes_votes = proposal
