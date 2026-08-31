@@ -66,7 +66,7 @@ test("sync services handle missing contracts and timer lifecycle", async (t) => 
   sync.startMembershipSync();
 
   assert.equal(intervalCallbacks.length, 4);
-  assert.equal(timeoutCallbacks.length, 2);
+  assert.equal(timeoutCallbacks.length, 4);
 
   for (const callback of timeoutCallbacks) {
     callback();

@@ -13,13 +13,18 @@ export interface QueuedAction {
 
 const OFFLINE_QUEUE_KEY = `zkvote_offline_queue_${NETWORK_CONFIG.networkName}`;
 export const MAX_QUEUE_RETRIES = 5;
+let memoryQueue: QueuedAction[] = [];
+
+function getStorage(): Storage | undefined {
+  return globalThis.localStorage;
+}
 
 export function getOfflineQueue(): QueuedAction[] {
   try {
-    const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
-    return raw ? (JSON.parse(raw) as QueuedAction[]) : [];
+    const raw = getStorage()?.getItem(OFFLINE_QUEUE_KEY);
+    return raw ? (JSON.parse(raw) as QueuedAction[]) : memoryQueue;
   } catch {
-    return [];
+    return memoryQueue;
   }
 }
 
@@ -34,8 +39,9 @@ export function enqueueOfflineAction(
     retries: 0,
   };
   queue.push(entry);
+  memoryQueue = queue;
   try {
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+    getStorage()?.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
   } catch {
     // ignore quota errors
   }
@@ -44,8 +50,9 @@ export function enqueueOfflineAction(
 
 export function dequeueOfflineAction(id: string): void {
   const queue = getOfflineQueue().filter((a) => a.id !== id);
+  memoryQueue = queue;
   try {
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+    getStorage()?.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
   } catch {
     // ignore
   }
@@ -59,8 +66,9 @@ export function updateQueueRetries(id: string): void {
     if (queue[idx].retries >= MAX_QUEUE_RETRIES) {
       queue.splice(idx, 1);
     }
+    memoryQueue = queue;
     try {
-      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+      getStorage()?.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
     } catch {
       // ignore
     }
@@ -104,7 +112,7 @@ export async function processOfflineQueue(): Promise<{
   return { processed, failed };
 }
 
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && import.meta.env.MODE !== "test") {
   window.addEventListener("online", () => {
     processOfflineQueue().catch(() => {});
   });

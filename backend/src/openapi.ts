@@ -300,4 +300,16 @@ export const openApiSpec = {
   },
 } as const;
 
+export const ENDPOINTS = Object.entries(openApiSpec.paths).flatMap(
+  ([path, operations]) =>
+    Object.keys(operations).map((method) => ({
+      method,
+      path,
+    })),
+);
+
+export function buildOpenApiDocument(): typeof openApiSpec {
+  return openApiSpec;
+}
+
 export default openApiSpec;

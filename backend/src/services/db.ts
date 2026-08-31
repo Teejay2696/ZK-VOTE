@@ -1787,10 +1787,6 @@ export function getEventsForDao(
   const tableName = partitionTableName(daoId); // Validates daoId
 
   // Reads must not run DDL — missing partitions return empty results.
-  if (!partitionTableExists(database, daoId)) {
-    return { events: [], total: 0, daoId };
-  }
-
   const {
     limit = 100,
     offset = 0,
@@ -1811,13 +1807,18 @@ export function getEventsForDao(
     orderBy,
     orderDirection,
   );
+  const validatedTypes =
+    types && types.length > 0 ? validateEventTypes(types) : null;
+
+  if (!partitionTableExists(database, daoId)) {
+    return { events: [], total: 0, daoId };
+  }
 
   let query = kysely
     .selectFrom(sql<any>`${sql.raw(tableName)}`.as("events"))
     .selectAll();
 
-  if (types && types.length > 0) {
-    const validatedTypes = validateEventTypes(types);
+  if (validatedTypes) {
     query = query.where("type", "in", validatedTypes);
   }
 
@@ -1858,8 +1859,8 @@ export function getEventsForDao(
     .selectFrom(sql<any>`${sql.raw(tableName)}`.as("events"))
     .select(sql<number>`COUNT(*)`.as("total"));
 
-  if (types && types.length > 0) {
-    countQuery = countQuery.where("type", "in", validateEventTypes(types));
+  if (validatedTypes) {
+    countQuery = countQuery.where("type", "in", validatedTypes);
   }
   if (verifiedOnly) {
     countQuery = countQuery.where("verified", "=", 1);

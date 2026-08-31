@@ -445,6 +445,16 @@ export const DOMAIN_TAG_WEIGHTED = "zkvote_weighted_domain_v1";
 export const DOMAIN_TAG_VOTE = "zkvote_vote_domain_v1";
 export const MAX_WEIGHT = BigInt(1_000_000); // inclusive upper bound for weighted voting
 export const MIN_WEIGHT = BigInt(1);
+let poseidonPromise: Promise<any> | null = null;
+
+async function getPoseidon() {
+  if (!poseidonPromise) {
+    poseidonPromise = import("circomlibjs").then(({ buildPoseidon }) =>
+      buildPoseidon(),
+    );
+  }
+  return poseidonPromise;
+}
 
 export function validateWeight(
   weight: string | bigint,
@@ -469,8 +479,7 @@ export async function calculateWeightedNullifier(
   weight: string,
   domainTag: string = DOMAIN_TAG_WEIGHTED,
 ): Promise<string> {
-  const { buildPoseidon } = await import("circomlibjs");
-  const poseidon = await buildPoseidon();
+  const poseidon = await getPoseidon();
   // Domain-separated nullifier includes weight and domain tag
   const tagField =
     BigInt(
@@ -821,8 +830,7 @@ export async function calculateNullifier(
   proposalId: string,
   chainId?: string,
 ): Promise<string> {
-  const { buildPoseidon } = await import("circomlibjs");
-  const poseidon = await buildPoseidon();
+  const poseidon = await getPoseidon();
 
   if (chainId !== undefined) {
     const hash = poseidon.F.toString(

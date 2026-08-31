@@ -100,6 +100,26 @@ pub enum VotingError {
     WeightOutOfRange = 27,
     /// Invalid domain tag
     InvalidDomainTag = 28,
+    /// Quadratic proposal voted through non-quadratic entrypoint
+    NotQuadraticProposal = 29,
+    /// Candidate index is outside the configured candidate range
+    InvalidCandidateIndex = 30,
+    /// Vote tally arithmetic overflowed
+    TallyOverflow = 31,
+    RandomnessCommitClosed = 32,
+    RandomnessAlreadyCommitted = 33,
+    RandomnessParticipantLimit = 34,
+    RandomnessRevealClosed = 35,
+    RandomnessCommitmentMissing = 36,
+    RandomnessRevealMismatch = 37,
+    RandomnessAlreadyRevealed = 38,
+    CandidateSeedFinalized = 39,
+    InsufficientRandomness = 40,
+    VdfInvalidDelay = 41,
+    VdfAlreadySubmitted = 42,
+    VdfDelayNotElapsed = 43,
+    VdfInputNotAvailable = 44,
+    VdfVerificationFailed = 45,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -1833,8 +1853,16 @@ impl Voting {
         );
     }
 
-    /// Get proposal info
-    pub fn get_proposal(env: Env, dao_id: u64, proposal_id: u64) -> ProposalInfo {
+    /// Cast a BLS12-381-backed anonymous vote.
+    pub fn vote_bls381(
+        env: Env,
+        dao_id: u64,
+        proposal_id: u64,
+        vote_choice: bool,
+        nullifier: U256,
+        root: U256,
+        proof: ProofBls381,
+    ) {
         Self::bump_instance(&env);
         Self::require_not_paused(&env);
 
