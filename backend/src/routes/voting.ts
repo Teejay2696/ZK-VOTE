@@ -25,6 +25,7 @@ import {
   sequenceManager,
   u256ToScVal,
   proofToScVal,
+  canonicalProofFingerprint,
   scValToU256Hex,
 } from "../services/stellar.js";
 import {
@@ -54,6 +55,7 @@ import {
   getVoteSubmission,
   insertVoteSubmission,
   updateVoteSubmission,
+  cleanupExpiredVoteSubmissions,
   storeVoteReceipt,
   getVoteReceipt,
   createVoteJob,
@@ -67,8 +69,18 @@ import {
   createSubmissionReceipt,
   getRelayerPublicKey,
 } from "../services/proof-encryption.js";
-import { votesProcessed } from "../services/metrics.js";
+import {
+  votesProcessed,
+  proofVerificationDuration,
+  proofValidationErrors,
+  proofSubmissionsTotal,
+  relayAttemptsTotal,
+  relayDuration,
+  relayErrors,
+  relayQueueDepth,
+} from "../services/metrics.js";
 import { sharedSingleFlight } from "../utils/singleflight.js";
+import type { Groth16Proof } from "../types/index.js";
 
 const router = Router();
 
@@ -409,6 +421,75 @@ export function setVoteExecutorForTests(executor: VoteExecutor | null): void {
   voteExecutorOverride = executor;
 }
 
+async function alertProofRedundancyMismatch(payload: {
+  daoId: number;
+  proposalId: number;
+  nullifier?: string;
+  durationMs: number;
+}): Promise<void> {
+  log("error", "proof_redundancy_mismatch_detected", payload);
+
+  if (!config.adminAlertWebhookUrl) return;
+
+  try {
+    const response = await fetch(config.adminAlertWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        event: "proof_redundancy_mismatch",
+        severity: "critical",
+        ...payload,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`webhook responded ${response.status}`);
+    }
+  } catch (err) {
+    log("warn", "proof_redundancy_alert_failed", {
+      error: (err as Error).message,
+    });
+  }
+}
+
+async function rejectOnRedundantProofMismatch(input: {
+  daoId: number;
+  proposalId: number;
+  nullifier?: string;
+  proof: unknown;
+  redundantProof?: unknown;
+}): Promise<void> {
+  if (!input.redundantProof) return;
+
+  const started = process.hrtime.bigint();
+  const primary = canonicalProofFingerprint(input.proof as Groth16Proof);
+  const secondary = canonicalProofFingerprint(
+    input.redundantProof as Groth16Proof,
+  );
+  const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+  if (primary === secondary) {
+    log("info", "proof_redundancy_match", {
+      daoId: input.daoId,
+      proposalId: input.proposalId,
+      durationMs,
+    });
+    return;
+  }
+
+  await alertProofRedundancyMismatch({
+    daoId: input.daoId,
+    proposalId: input.proposalId,
+    nullifier: input.nullifier,
+    durationMs,
+  });
+  throw new ApiError(
+    400,
+    ErrorCode.VOTE_REJECTED,
+    "VOTE_REJECTED",
+    "Redundant prover generated a mismatched canonical proof",
+  );
+}
+
 function respondToVoteExecution(
   res: Response,
   execution: VoteExecutionResult,
@@ -602,11 +683,14 @@ router.post(
       nullifier,
       root,
       proof,
+      redundantProof,
       nonce,
       timestamp,
       voterPublicKey,
       voterSignature,
     } = body;
+
+    const idempotencyKey = req.header("Idempotency-Key") || nullifier;
 
     try {
       log("info", "vote_request", { daoId, proposalId });
@@ -698,6 +782,14 @@ router.post(
         }
       }
 
+      await rejectOnRedundantProofMismatch({
+        daoId,
+        proposalId,
+        nullifier,
+        proof,
+        redundantProof,
+      });
+
       // Proof freshness validation
       if (timestamp) {
         const now = Date.now();
@@ -729,12 +821,19 @@ router.post(
         }
       }
 
-      // Idempotency: check vote_submissions table keyed on nullifier_hash
-      if (nullifier) {
-        const existing = getVoteSubmission(nullifier);
+      // Clean up stale submissions (e.g., older than 2 minutes)
+      try {
+        cleanupExpiredVoteSubmissions(120000);
+      } catch (err) {
+        log("warn", "cleanup_expired_vote_submissions_failed", { error: (err as Error).message });
+      }
+
+      // Idempotency: check vote_submissions table keyed on idempotencyKey
+      if (idempotencyKey) {
+        const existing = getVoteSubmission(idempotencyKey);
         if (existing) {
           log("info", "vote_idempotent_hit", {
-            nullifier,
+            idempotencyKey,
             txHash: existing.tx_hash,
             status: existing.status,
           });
@@ -762,11 +861,11 @@ router.post(
             status: "PENDING",
           });
         }
-        // Claim the nullifier slot before doing any on-chain work.
+        // Claim the idempotencyKey slot before doing any on-chain work.
         // If two concurrent requests race here, INSERT OR IGNORE means only
         // one proceeds; the other re-reads above and gets the 202 path.
-        if (!insertVoteSubmission(nullifier)) {
-          const concurrent = getVoteSubmission(nullifier);
+        if (!insertVoteSubmission(idempotencyKey)) {
+          const concurrent = getVoteSubmission(idempotencyKey);
           if (concurrent) {
             res.setHeader("Retry-After", "5");
             return res.status(202).json({
@@ -807,7 +906,9 @@ router.post(
     } catch (err) {
       if (nullifier) {
         updateTransactionLogStatus(nullifier, "FAILED");
-        updateVoteSubmission(nullifier, "failed");
+      }
+      if (idempotencyKey) {
+        updateVoteSubmission(idempotencyKey, "failed");
       }
       votesProcessed.inc({ status: "error" });
       log("error", "vote_exception", {
