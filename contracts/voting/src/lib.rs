@@ -448,6 +448,7 @@ pub struct StorageLayoutInfo {
     pub storage_version: u32,
     pub latest_migration_at: u64,
     pub rollback_to_version: Option<u32>,
+    pub capabilities: Vec<u32>,
 }
 
 #[contracttype]
@@ -971,6 +972,7 @@ impl Voting {
                 .storage()
                 .persistent()
                 .get(&DataKey::UpgradeRollback(contract_version)),
+            capabilities: soroban_sdk::vec![&env, 1, 2], // 1: qv, 2: named_signals
         }
     }
 

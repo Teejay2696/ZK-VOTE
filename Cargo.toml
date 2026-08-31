@@ -16,7 +16,11 @@ members = [
     "contracts/vdf",
     "contracts/rewards",
     "tests/integration",
-    "crates/nova-aggregator",
+    "contracts/poc-bls12-381",
+    "contracts/token",
+    "contracts/vdf",
+    "contracts/threshold-crypto",
+    "contracts/rewards"
 ]
 default-members = [
     "contracts/zkvote-groth16",

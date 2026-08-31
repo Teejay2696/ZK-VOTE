@@ -2314,11 +2314,20 @@ export interface components {
             cached: boolean;
         };
     };
-    responses: never;
-    parameters: never;
-    requestBodies: never;
-    headers: never;
-    pathItems: never;
+    PublicSignals: {
+      root: string;
+      nullifier: string;
+      daoId: string;
+      proposalId: string;
+      voteChoice: string;
+      numCandidates: string;
+    };
+  };
+  responses: never;
+  parameters: never;
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
