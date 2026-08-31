@@ -101,21 +101,68 @@ const envSchema = z.object({
 
   CORS_ORIGIN: z.string().optional().superRefine((val, ctx) => {
     const parent = ctx.parent as Record<string, unknown>;
-    if (parent.NODE_ENV === "production") {
-      if (!val || val.trim() === "") {
-        ctx.addIssue({ code: "custom", message: "CORS_ORIGIN must be set in production" });
-      } else {
-        const origins = val.split(",").map((s) => s.trim()).filter(Boolean);
-        if (origins.some((o) => o === "*")) {
-          ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain '*' in production" });
+    const isProd = parent.NODE_ENV === "production";
+
+    if (isProd && (!val || val.trim() === "")) {
+      ctx.addIssue({ code: "custom", message: "CORS_ORIGIN must be set in production" });
+      return;
+    }
+
+    const origins = val
+      ? val.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+
+    if (origins.length === 0) return;
+
+    if (origins.length > 1 && origins.includes("*")) {
+      ctx.addIssue({
+        code: "custom",
+        message: "CORS_ORIGIN cannot combine '*' with specific origins",
+      });
+      return;
+    }
+
+    if (origins[0] === "*") {
+      if (isProd) {
+        ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain '*' in production" });
+      }
+      return;
+    }
+
+    if (origins.some((o) => o.includes("*"))) {
+      ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain wildcards" });
+      return;
+    }
+
+    for (const origin of origins) {
+      try {
+        const parsed = new URL(origin);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          ctx.addIssue({ code: "custom", message: `CORS_ORIGIN must use http or https: ${origin}` });
+        } else if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+          ctx.addIssue({ code: "custom", message: `CORS_ORIGIN must not contain a path, query, or hash: ${origin}` });
         }
-        if (origins.some((o) => o.includes("*"))) {
-          ctx.addIssue({ code: "custom", message: "CORS_ORIGIN cannot contain wildcards in production" });
-        }
+      } catch {
+        ctx.addIssue({ code: "custom", message: `CORS_ORIGIN is not a valid origin: ${origin}` });
       }
     }
   }),
-  CORS_ALLOWED_METHODS: z.string().default("GET,POST,OPTIONS"),
+  CORS_ALLOWED_METHODS: z
+    .string()
+    .default("GET,POST,OPTIONS")
+    .refine(
+      (val) => {
+        const methods = val
+          .split(",")
+          .map((m) => m.trim().toUpperCase())
+          .filter(Boolean);
+        return (
+          methods.length > 0 &&
+          methods.every((m) => ["GET", "POST", "OPTIONS"].includes(m))
+        );
+      },
+      { message: "CORS_ALLOWED_METHODS must be restricted to GET, POST, OPTIONS" },
+    ),
   CORS_ALLOWED_HEADERS: z.string().default("Content-Type,Authorization"),
   CORS_MAX_AGE: z.coerce.number().int().positive().default(3600),
 
@@ -430,9 +477,12 @@ export const config = {
   staticVkVersion: validatedEnv.VOTING_VK_VERSION,
 
   // CORS
-  corsOrigins: validatedEnv.CORS_ORIGIN
-    ? validatedEnv.CORS_ORIGIN.split(",").map((origin) => origin.trim())
-    : ("*" as const),
+  corsOrigins:
+    validatedEnv.CORS_ORIGIN && validatedEnv.CORS_ORIGIN.trim() !== "*"
+      ? validatedEnv.CORS_ORIGIN.split(",")
+          .map((origin) => origin.trim())
+          .filter(Boolean)
+      : ("*" as const),
 
   // Logging
   logClientIp: validatedEnv.LOG_CLIENT_IP,
