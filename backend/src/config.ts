@@ -323,35 +323,23 @@ const envSchema = z.object({
   DB_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(50),
   DB_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2000),
 
-  // --- Pluggable relay DB backend (issue #305) ---
-  // `sqlite` keeps the embedded better-sqlite3 file (default, unchanged).
-  // `postgres` routes Kysely through the Postgres dialect via DATABASE_URL.
-  // `spanner` is recognised by config/planning but not yet wired — selecting it
-  // fails fast rather than silently falling back to SQLite.
-  DB_BACKEND: z.enum(["sqlite", "postgres", "spanner"]).default("sqlite"),
-  DATABASE_URL: z.string().optional(),
-  DB_SCHEMA: z.string().default("public"),
-  DB_POOL_MAX: z.coerce.number().int().positive().default(10),
-  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
-  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
-  DB_SSL: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((v) => v === "true"),
+  // Submit Queue (for bounded concurrency and backpressure)
+  SUBMIT_QUEUE_MAX_DEPTH: z.coerce.number().int().positive().default(100),
+  SUBMIT_QUEUE_ITEM_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120000), // 2 minutes
 
-  // Dual-write bridge: mirror every relay write into a shadow backend so a
-  // Postgres cutover can be rehearsed (and verified) against live traffic.
-  DB_DUAL_WRITE: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((v) => v === "true"),
-  DB_DUAL_WRITE_URL: z.string().optional(),
-  // When true a shadow-write failure fails the request; when false it is only
-  // counted and logged (the safe default during a rehearsal).
-  DB_DUAL_WRITE_STRICT: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((v) => v === "true"),
+  // RPC Concurrency Limits
+  RPC_MAX_CONCURRENT_REQUESTS: z.coerce.number().int().positive().default(10),
+
+  // Cache TTLs (for memory bounding)
+  NULLIFIER_CACHE_TTL_MS: z.coerce.number().int().positive().default(600000), // 10 minutes
+  PROOF_CACHE_TTL_MS: z.coerce.number().int().positive().default(600000), // 10 minutes
+  MEMBERSHIP_CACHE_TTL_MS: z.coerce.number().int().positive().default(300000), // 5 minutes
+  NULLIFIER_CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(10000),
+  PROOF_CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(5000),
 
   MAX_SEQUENCE_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(1),
   VOTE_SUBMISSION_PENDING_TTL_MS: z.coerce
@@ -617,17 +605,19 @@ export const config = {
   dbRetryBaseDelayMs: validatedEnv.DB_RETRY_BASE_DELAY_MS,
   dbRetryMaxDelayMs: validatedEnv.DB_RETRY_MAX_DELAY_MS,
 
-  // Pluggable relay DB backend (issue #305)
-  dbBackend: validatedEnv.DB_BACKEND,
-  databaseUrl: validatedEnv.DATABASE_URL,
-  dbSchema: validatedEnv.DB_SCHEMA,
-  dbPoolMax: validatedEnv.DB_POOL_MAX,
-  dbPoolIdleTimeoutMs: validatedEnv.DB_POOL_IDLE_TIMEOUT_MS,
-  dbConnectTimeoutMs: validatedEnv.DB_CONNECT_TIMEOUT_MS,
-  dbSsl: validatedEnv.DB_SSL,
-  dbDualWrite: validatedEnv.DB_DUAL_WRITE,
-  dbDualWriteUrl: validatedEnv.DB_DUAL_WRITE_URL,
-  dbDualWriteStrict: validatedEnv.DB_DUAL_WRITE_STRICT,
+  // Submit Queue
+  submitQueueMaxDepth: validatedEnv.SUBMIT_QUEUE_MAX_DEPTH,
+  submitQueueItemTimeoutMs: validatedEnv.SUBMIT_QUEUE_ITEM_TIMEOUT_MS,
+
+  // RPC Concurrency
+  rpcMaxConcurrentRequests: validatedEnv.RPC_MAX_CONCURRENT_REQUESTS,
+
+  // Cache TTLs
+  nullifierCacheTtlMs: validatedEnv.NULLIFIER_CACHE_TTL_MS,
+  proofCacheTtlMs: validatedEnv.PROOF_CACHE_TTL_MS,
+  membershipCacheTtlMs: validatedEnv.MEMBERSHIP_CACHE_TTL_MS,
+  nullifierCacheMaxEntries: validatedEnv.NULLIFIER_CACHE_MAX_ENTRIES,
+  proofCacheMaxEntries: validatedEnv.PROOF_CACHE_MAX_ENTRIES,
 
   // Sequence manager
   maxSequenceRetryAttempts: validatedEnv.MAX_SEQUENCE_RETRY_ATTEMPTS,
