@@ -2261,58 +2261,64 @@ export interface paths {
         };
       };
     };
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-  schemas: {
-    HealthResponse: {
-      /** @example ok */
-      status: string;
-      rpc: {
-        ok: boolean;
-      };
+    schemas: {
+        HealthResponse: {
+            /** @example ok */
+            status: string;
+            rpc: {
+                ok: boolean;
+            };
+        };
+        ReadyResponse: {
+            /** @example ready */
+            status: string;
+        };
+        ErrorResponse: {
+            /** @example Unauthorized */
+            error: string;
+        };
+        ConfigResponse: {
+            networkPassphrase: string;
+            rpcUrl: string;
+            ipfsEnabled: boolean;
+        };
+        SuccessResponse: {
+            /** @example true */
+            success: boolean;
+            /** @example a1b2c3...64hex */
+            txHash?: string;
+        };
+        PaginatedResponse: {
+            data: {
+                [key: string]: unknown;
+            }[];
+            pagination: {
+                cursor?: string | null;
+                hasMore: boolean;
+                total: number;
+            };
+        };
+        DaosListResponse: {
+            data: {
+                [key: string]: unknown;
+            }[];
+            pagination: {
+                cursor?: string | null;
+                hasMore: boolean;
+                total: number;
+            };
+            lastSync: string | null;
+            cached: boolean;
+        };
     };
-    ReadyResponse: {
-      /** @example ready */
-      status: string;
-    };
-    ErrorResponse: {
-      /** @example Unauthorized */
-      error: string;
-    };
-    ConfigResponse: {
-      networkPassphrase: string;
-      rpcUrl: string;
-      ipfsEnabled: boolean;
-    };
-    SuccessResponse: {
-      /** @example true */
-      success: boolean;
-      /** @example a1b2c3...64hex */
-      txHash?: string;
-    };
-    DaosListResponse: {
-      daos: {
-        [key: string]: unknown;
-      }[];
-      total: number;
-      lastSync: string | null;
-      cached: boolean;
-    };
-  };
-  responses: never;
-  parameters: never;
-  requestBodies: never;
-  headers: never;
-  pathItems: never;
+    responses: never;
+    parameters: never;
+    requestBodies: never;
+    headers: never;
+    pathItems: never;
 }
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
