@@ -327,3 +327,25 @@ export const claimLimiter = isTestMode
       legacyHeaders: false,
       keyGenerator,
     });
+
+/**
+ * Rate limiter for tally proof verification requests.
+ * Verification is public (any observer can check final tallies), but the
+ * endpoint performs expensive SNARK/pairing checks, so it is still capped.
+ */
+export const verifyTallyProofLimiter = isTestMode
+  ? noopMiddleware
+  : withMetrics(
+      "verifyTallyProof",
+      rateLimit({
+        windowMs: 60 * 1000, // 1 minute
+        max: 30,
+        ...headerOptions,
+        store: getStore("verifyTallyProof"),
+        keyGenerator,
+        handler: makeHandler(
+          "verifyTallyProof",
+          "Too many tally proof verification requests, please try again later",
+        ),
+      }),
+    );
