@@ -25,6 +25,7 @@ import {
   markHealthy,
   markUnavailable,
 } from "../services/service-health.js";
+import { getSupervisor } from "../services/supervisor.js";
 import v8 from "node:v8";
 import fs from "node:fs";
 import os from "node:os";
@@ -268,6 +269,29 @@ router.get("/ready", async (req: Request, res: Response) => {
     return res
       .status(503)
       .json({ status: "error", message: (err as Error).message });
+  }
+});
+
+/**
+ * GET /services
+ * Supervisor status for all background services (admin only)
+ * Exposes per-service health, failure counts, and restart history
+ */
+router.get("/services", async (req: Request, res: Response) => {
+  if (config.healthExposeDetails) {
+    const token = extractAuthToken(req);
+    if (token !== config.relayerAuthToken) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+  }
+
+  try {
+    const supervisor = getSupervisor();
+    const status = supervisor.getStatus();
+    res.json(status);
+  } catch (err) {
+    log("error", "supervisor_status_failed", { error: (err as Error).message });
+    res.status(500).json({ error: "Failed to get supervisor status" });
   }
 });
 
