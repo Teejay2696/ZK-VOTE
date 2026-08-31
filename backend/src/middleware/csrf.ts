@@ -15,6 +15,7 @@ import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
 import { log } from "../services/logger.js";
 import { generateCsrfToken, validateCsrfToken } from "../utils/csrf.js";
+import { getAllowedOrigins } from "../cors-config.js";
 
 /**
  * CSRF guard middleware
@@ -31,7 +32,7 @@ export function csrfGuard(
   }
 
   // N12 hardening: with wildcard CORS, any third-party origin could POST
-  // to write endpoints — fail-closed instead of waving the request through.
+  // to write endpoints -- fail-closed instead of waving the request through.
   // Production deploys must set CORS_ORIGIN to the frontend origin.
   if (config.corsOrigins === "*" || !config.corsOrigins) {
     log("warn", "csrf_blocked_wildcard_cors", { path: req.path });
@@ -69,9 +70,9 @@ export function csrfGuard(
   // Some privacy browsers strip these headers, but for write endpoints we require at least one
   if (!origin && !referer) {
     log("warn", "csrf_blocked_missing_origin_referer", { path: req.path });
-    return res
-      .status(403)
-      .json({ error: "Origin or Referer header required for write endpoints" });
+    return res.status(403).json({
+      error: "Origin or Referer header required for write endpoints",
+    });
   }
 
   // requestOrigin already computed above (origin || referer origin)
@@ -80,9 +81,7 @@ export function csrfGuard(
   if (requestOrigin) {
     // Security hardening #3: Exact origin matching (no wildcard subdomains)
     // This prevents subdomain takeover attacks
-    const allowedOrigins = Array.isArray(config.corsOrigins)
-      ? config.corsOrigins
-      : [config.corsOrigins];
+    const allowedOrigins = getAllowedOrigins();
 
     // Use exact matching only - no wildcard subdomain support
     if (!allowedOrigins.includes(requestOrigin)) {
@@ -95,9 +94,9 @@ export function csrfGuard(
     }
   }
 
-  // Security hardening #4: CSRF token validation as defense-in-depth
+  // Security hardening #4: CSRF%20token validation as defense-in-depth
   // Validate X-CSRF-Token header for state-changing requests
-  const csrfToken = req.headers["x-csrf-token"] as string;
+  const csrfToken = req.headers['x-csrf-token'] as string;
   if (!csrfToken || !validateCsrfToken(csrfToken, req)) {
     log("warn", "csrf_invalid_token", {
       path: req.path,
