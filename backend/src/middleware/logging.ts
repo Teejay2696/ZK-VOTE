@@ -12,6 +12,8 @@
  * - Log volume metrics
  * - Trace ID correlation across all log entries
  * - Supports PII redaction via the enhanced logger
+ * Provides request context and structured logging for all requests.
+ * Supports PII redaction via the enhanced logger.
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -303,12 +305,19 @@ export function requestLogger(
 
   // Track metrics
   logMetrics.totalRequests++;
+  // If "none", ipMeta stays empty
+
+  // Build body meta (only log body keys, not values)
+  const bodyMeta = policy.showBodyKeysOnly
+    ? { bodyKeys: Object.keys(req.body || {}) }
+    : {};
 
   // Log request start (always, at info level)
   log("info", "request_start", {
     ctx,
     traceId,
     path: requestPath,
+    path: req.path,
     method: req.method,
     ...ipMeta,
     ...requestBodyMeta,
@@ -374,6 +383,8 @@ export function requestLogger(
       sampled,
       sampleReason: reason,
       sampleRate: rate,
+      path: req.path,
+      status: res.statusCode,
     });
   });
 
@@ -414,12 +425,14 @@ export function errorLogger(
   const ctx = req.ctx || "unknown";
   const isProduction = process.env.NODE_ENV === "production";
 
+  // Log the error with redaction
   log("error", "request_error", {
     ctx,
     traceId: req.traceId,
     path: req.path,
     method: req.method,
     error: err.message,
+    // In production, don't log stack traces
     ...(isProduction ? {} : { stack: err.stack }),
   });
 

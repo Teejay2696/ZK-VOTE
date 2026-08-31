@@ -18,6 +18,7 @@ import { getLogMetrics } from "../middleware/logging.js";
 import { getWalHealth } from "../services/walResilience.js";
 
 import { checkRotationHealth, getSecretBackend } from "../services/secrets/index.js";
+import { getWalHealth } from "../services/walResilience.js";
 
 import { rpcPoolManager } from "../services/stellar.js";
 import { getAllCircuitBreakerMetrics } from "../services/circuit-breaker.js";

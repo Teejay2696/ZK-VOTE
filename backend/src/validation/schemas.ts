@@ -159,7 +159,16 @@ const ipfsCid = z.string().refine(
       const content = trimmed.slice(4);
       return /^[a-z2-7]+$/.test(content);
     }
+    // CIDv0: exact-length Bitcoin base58 encoding.
+    if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(val)) return true;
+    // CIDv1: bafy... or bafk... (59+ chars)
+    if ((val.startsWith("bafy") || val.startsWith("bafk")) && val.length >= 59)
+      return true;
     return false;
+    if (!val || typeof val !== "string") return false;
+    const trimmed = val.trim();
+    if (/[/?\\#\s\0\r\n\t]/.test(trimmed)) return false;
+    return CIDV0_REGEX.test(trimmed) || CIDV1_REGEX.test(trimmed);
   },
   { message: "Invalid IPFS CID format" },
 );
