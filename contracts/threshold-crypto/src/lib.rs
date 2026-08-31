@@ -1,13 +1,12 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol, Vec, U256,
+    contract, contracterror, contractimpl, contracttype, crypto::bn254::Bn254G1Affine,
+    panic_with_error, symbol_short, Address, Env, Symbol, Vec, U256,
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("admin");
 const CONFIG_KEY: Symbol = symbol_short!("cfg");
 const FINALIZED_KEY: Symbol = symbol_short!("fini");
-const SHARE_COUNT_KEY: Symbol = symbol_short!("shcnt");
 const VERSION: u32 = 1;
 const VERSION_KEY: Symbol = symbol_short!("ver");
 
@@ -32,6 +31,12 @@ pub enum ThresholdError {
     ParticipantExists = 11,
     TooManyParticipants = 12,
     NotInitialized = 13,
+    /// Privacy analytics not configured via `init_analytics`
+    AnalyticsNotConfigured = 14,
+    /// Submitted ciphertext below the configured minimum cohort size cannot be decrypted
+    AnalyticsBelowMinCohort = 15,
+    /// Invalid minimum cohort (must be >= 1)
+    InvalidCohort = 16,
 }
 
 #[contracttype]

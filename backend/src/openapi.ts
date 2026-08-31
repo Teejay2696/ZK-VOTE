@@ -1,7 +1,14 @@
 /**
- * OpenAPI Specification for ZKVote Backend
- * Documents all routes including audit and remediation for accountability.
- * Scope: middleware/audit.ts, routes/*, openapi.ts
+ * OpenAPI 3.1 Specification for ZKVote Backend (Task #339)
+ *
+ * Source of truth: the committed `backend/openapi.json` (generated docs for
+ * every versioned route). `buildOpenApiDocument()` returns that document so
+ * the served `/api-docs/openapi.json`, the ``docs:*`` scripts, and the doc
+ * itself stay byte-for-byte consistent (see scripts/generate-openapi.ts).
+ *
+ * Also exports the zod *response* schemas used to validate live responses in
+ * test/openapi-validation.test.js, and `ENDPOINTS` (method + route for every
+ * documented path) used for API.md coverage and docs accounting.
  */
 
 export const openApiSpec = {
@@ -53,6 +60,18 @@ export const openApiSpec = {
             },
           },
         },
+      },
+      PublicSignals: {
+        type: "object",
+        required: ["root", "nullifier", "daoId", "proposalId", "voteChoice", "numCandidates"],
+        properties: {
+          root: { type: "string" },
+          nullifier: { type: "string" },
+          daoId: { type: "string" },
+          proposalId: { type: "string" },
+          voteChoice: { type: "string" },
+          numCandidates: { type: "string" },
+        }
       },
       AuditEntry: {
         type: "object",

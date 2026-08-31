@@ -6,6 +6,9 @@
 // (Rust→WASM) it is never loaded. `CircuitSignals` is used only as a type.
 import type { CircuitSignals, Groth16Proof } from "snarkjs";
 
+// Shared BN254 field/nullifier validation helpers (#370)
+import { assertValidFieldElement, assertValidNullifier } from "../types/index";
+
 // Default to the Rust prover. Force the legacy `snarkjs` prover by setting
 // `VITE_ZK_USE_RUST_PROVER=false` (Vite) or `ZK_USE_RUST_PROVER=false`
 // (Node/tests). The value is read once at module load.
@@ -125,6 +128,7 @@ export interface VoteProofInput {
   daoId: string;
   proposalId: string;
   voteChoice: string; // "0" for no, "1" for yes
+  relayerAddress: string; // Relayer Stellar address - public signal for relayer binding
   commitment: string; // Identity commitment - private input, computed internally in circuit
   pathElements: string[];
   pathIndices: number[];
@@ -558,25 +562,29 @@ export async function generateVoteProof(
     const circuitVersion = input.circuitVersion ?? "v1";
     let circuitInput: Record<string, unknown>;
     if (circuitVersion === "v2") {
+      // vote_v2.circom: 10 public signals
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
-        chainId: input.chainId ?? "0",
+        chainId: input.chainId || "0",
+        relayerAddress: input.relayerAddress,
         secret: input.secret,
         salt: input.salt,
         pathElements: input.pathElements,
         pathIndices: input.pathIndices,
       };
     } else {
+      // vote_v1.circom: 7 public signals (vote.circom with relayerAddress)
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
+        relayerAddress: input.relayerAddress,
         secret: input.secret,
         salt: input.salt,
         pathElements: input.pathElements,
@@ -991,3 +999,16 @@ export async function verifyProofWithVersionedVK(
     return false;
   }
 }
+
+// STARK Prover Stub
+export async function generateStarkProof(signals: any) {
+    // Prototype: Plonky2 based WASM prover logic goes here
+    return {
+        starkProof: {
+            proof_bytes: new Uint8Array(64),
+            public_inputs: new Uint8Array(32),
+        },
+        hybridCommitment: 'dummy-sha3-hash'
+    };
+}
+

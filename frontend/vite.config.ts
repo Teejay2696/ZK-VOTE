@@ -36,6 +36,17 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            zk: ['snarkjs', 'circomlibjs'],
+            react: ['react', 'react-dom'],
+            stellar: ['@stellar/stellar-sdk']
+          }
+        }
+      }
+    },
     test: {
       globals: true,
       environment: "jsdom",

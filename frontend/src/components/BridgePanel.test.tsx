@@ -5,6 +5,8 @@ import BridgePanel from "./BridgePanel";
 // Mock window.ethereum
 const mockEthereum = {
   request: vi.fn(),
+  on: vi.fn(),
+  removeListener: vi.fn(),
 };
 
 describe("BridgePanel", () => {

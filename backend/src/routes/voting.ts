@@ -54,6 +54,7 @@ import {
   getVoteSubmission,
   insertVoteSubmission,
   updateVoteSubmission,
+  cleanupExpiredVoteSubmissions,
   storeVoteReceipt,
   getVoteReceipt,
 } from "../services/db.js";
@@ -63,7 +64,16 @@ import {
   createSubmissionReceipt,
   getRelayerPublicKey,
 } from "../services/proof-encryption.js";
-import { votesProcessed } from "../services/metrics.js";
+import {
+  votesProcessed,
+  proofVerificationDuration,
+  proofValidationErrors,
+  proofSubmissionsTotal,
+  relayAttemptsTotal,
+  relayDuration,
+  relayErrors,
+  relayQueueDepth,
+} from "../services/metrics.js";
 import { sharedSingleFlight } from "../utils/singleflight.js";
 import type { Groth16Proof } from "../types/index.js";
 
@@ -375,6 +385,8 @@ router.post(
       voterSignature,
     } = body;
 
+    const idempotencyKey = req.header("Idempotency-Key") || nullifier;
+
     try {
       log("info", "vote_request", { daoId, proposalId });
 
@@ -504,12 +516,19 @@ router.post(
         }
       }
 
-      // Idempotency: check vote_submissions table keyed on nullifier_hash
-      if (nullifier) {
-        const existing = getVoteSubmission(nullifier);
+      // Clean up stale submissions (e.g., older than 2 minutes)
+      try {
+        cleanupExpiredVoteSubmissions(120000);
+      } catch (err) {
+        log("warn", "cleanup_expired_vote_submissions_failed", { error: (err as Error).message });
+      }
+
+      // Idempotency: check vote_submissions table keyed on idempotencyKey
+      if (idempotencyKey) {
+        const existing = getVoteSubmission(idempotencyKey);
         if (existing) {
           log("info", "vote_idempotent_hit", {
-            nullifier,
+            idempotencyKey,
             txHash: existing.tx_hash,
             status: existing.status,
           });
@@ -537,11 +556,11 @@ router.post(
             status: "PENDING",
           });
         }
-        // Claim the nullifier slot before doing any on-chain work.
+        // Claim the idempotencyKey slot before doing any on-chain work.
         // If two concurrent requests race here, INSERT OR IGNORE means only
         // one proceeds; the other re-reads above and gets the 202 path.
-        if (!insertVoteSubmission(nullifier)) {
-          const concurrent = getVoteSubmission(nullifier);
+        if (!insertVoteSubmission(idempotencyKey)) {
+          const concurrent = getVoteSubmission(idempotencyKey);
           if (concurrent) {
             res.setHeader("Retry-After", "5");
             return res.status(202).json({
@@ -557,11 +576,27 @@ router.post(
       let scNullifier: StellarSdk.xdr.ScVal;
       let scRoot: StellarSdk.xdr.ScVal;
       let scProof: StellarSdk.xdr.ScVal;
+      const proofVerifyStart = process.hrtime.bigint();
       try {
         scNullifier = u256ToScVal(nullifier);
         scRoot = u256ToScVal(root);
         scProof = proofToScVal(proof);
+        const proofVerifyDuration =
+          Number(process.hrtime.bigint() - proofVerifyStart) / 1e9;
+        proofVerificationDuration.observe(
+          { dao_id: String(daoId), result: "ok" },
+          proofVerifyDuration,
+        );
+        proofSubmissionsTotal.inc({ result: "accepted" });
       } catch (err) {
+        const proofVerifyDuration =
+          Number(process.hrtime.bigint() - proofVerifyStart) / 1e9;
+        proofVerificationDuration.observe(
+          { dao_id: String(daoId), result: "error" },
+          proofVerifyDuration,
+        );
+        proofValidationErrors.inc({ error_kind: "invalid_format" });
+        proofSubmissionsTotal.inc({ result: "rejected" });
         return res.status(400).json({ error: (err as Error).message });
       }
 
@@ -600,6 +635,13 @@ router.post(
       // Build contract call
       const contract = new StellarSdk.Contract(config.votingContractId!);
 
+      // Extract relayer address and convert to ScVal
+      const relayerAddress = relayerKeypair.publicKey();
+      const scRelayerAddress = StellarSdk.nativeToScVal(
+        relayerAddress,
+        { type: "address" },
+      );
+
       const args = [
         StellarSdk.nativeToScVal(daoId, { type: "u64" }),
         StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
@@ -613,6 +655,8 @@ router.post(
 
       // Serialize account fetch + build + simulate + sign + submit under sequence lock
       // to prevent nonce race conditions between concurrent requests
+      const relayStart = process.hrtime.bigint();
+      relayQueueDepth.inc();
       const { sendResult, result } = await withSequenceLock(async () => {
         // Get relayer account
         const account = await (server as StellarSdk.rpc.Server).getAccount(
@@ -643,6 +687,7 @@ router.post(
             daoId,
             proposalId,
           });
+          relayErrors.inc({ error_type: "simulation" });
           // All proof/eligibility failures surface as VOTE_REJECTED — never
           // expose which specific check failed (THREAT_MODEL.md §privacy).
           throw new Error("SIMULATION_FAILED:VOTE_REJECTED");
@@ -670,8 +715,11 @@ router.post(
           );
           if (nullifier) {
             updateTransactionLogStatus(nullifier, "FAILED");
-            updateVoteSubmission(nullifier, "failed");
           }
+          if (idempotencyKey) {
+            updateVoteSubmission(idempotencyKey, "failed");
+          }
+          relayErrors.inc({ error_type: isBadSeq ? "sequence_lock" : "submission" });
           log("error", "submit_failed", {
             daoId,
             proposalId,
@@ -698,8 +746,15 @@ router.post(
       if (result.status === "SUCCESS") {
         if (nullifier && sendResult.hash) {
           updateTransactionLogStatus(nullifier, "SUCCESS", sendResult.hash);
-          updateVoteSubmission(nullifier, "confirmed", sendResult.hash);
         }
+        if (idempotencyKey && sendResult.hash) {
+          updateVoteSubmission(idempotencyKey, "confirmed", sendResult.hash);
+        }
+        const relayDurationSec =
+          Number(process.hrtime.bigint() - relayStart) / 1e9;
+        relayQueueDepth.dec();
+        relayAttemptsTotal.inc({ status: "success" });
+        relayDuration.observe({ status: "success" }, relayDurationSec);
         votesProcessed.inc({ status: "success" });
         log("info", "vote_success", {
           txHash: sendResult.hash,
@@ -722,8 +777,15 @@ router.post(
       } else {
         if (nullifier && sendResult.hash) {
           updateTransactionLogStatus(nullifier, "FAILED", sendResult.hash);
-          updateVoteSubmission(nullifier, "failed", sendResult.hash);
         }
+        if (idempotencyKey && sendResult.hash) {
+          updateVoteSubmission(idempotencyKey, "failed", sendResult.hash);
+        }
+        const relayDurationSec =
+          Number(process.hrtime.bigint() - relayStart) / 1e9;
+        relayQueueDepth.dec();
+        relayAttemptsTotal.inc({ status: "failed" });
+        relayDuration.observe({ status: "failed" }, relayDurationSec);
         votesProcessed.inc({ status: "failed" });
         log("error", "vote_failed", {
           txHash: sendResult.hash,
@@ -738,7 +800,9 @@ router.post(
     } catch (err) {
       if (nullifier) {
         updateTransactionLogStatus(nullifier, "FAILED");
-        updateVoteSubmission(nullifier, "failed");
+      }
+      if (idempotencyKey) {
+        updateVoteSubmission(idempotencyKey, "failed");
       }
       votesProcessed.inc({ status: "error" });
       log("error", "vote_exception", {

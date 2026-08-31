@@ -16,16 +16,11 @@
 import { Router, type Request, type Response } from "express";
 import { authGuard, queryLimiter } from "../middleware/index.js";
 import {
-  appendAudit,
-  isIdempotencyKeyUsed,
-  markIdempotencyKey,
-  deriveActor,
-  redactPii,
-} from "../middleware/audit.js";
-import { hashIp } from "../services/logger.js";
-import { log } from "../services/logger.js";
-import type { AsyncHandler } from "../types/index.js";
-import crypto from "crypto";
+  getRemediationHistory,
+  getMTTRStats,
+} from "../services/remediation.js";
+import { validateQuery } from "../middleware/index.js";
+import { remediationHistoryQuerySchema } from "../validation/schemas.js";
 
 const router = Router();
 
