@@ -7,8 +7,14 @@ members = [
     "contracts/membership-tree",
     "contracts/voting",
     "contracts/comments",
+    "contracts/poc-bls12-381",
     "contracts/bridge/soroban",
     "contracts/circuit-registry",
+    "contracts/threshold-crypto",
+    "contracts/poc-bls12-381",
+    "contracts/token",
+    "contracts/vdf",
+    "contracts/rewards",
     "tests/integration",
     "contracts/poc-bls12-381",
     "contracts/token",
@@ -23,13 +29,8 @@ default-members = [
     "contracts/membership-tree",
     "contracts/voting",
     "contracts/comments",
-    "contracts/poc-bls12-381",
     "contracts/bridge/soroban",
     "contracts/circuit-registry",
-    "contracts/token",
-    "contracts/vdf",
-    "contracts/threshold-crypto",
-    "contracts/rewards",
 ]
 resolver = "2"
 
