@@ -61,6 +61,7 @@ mod delegation;
 const TREE_CONTRACT: Symbol = symbol_short!("tree");
 const REGISTRY: Symbol = symbol_short!("registry");
 const CIRCUIT_REGISTRY: Symbol = symbol_short!("circ_reg");
+const CIRCUIT_REGISTRY_ADMIN: Symbol = symbol_short!("cr_admin");
 const VERSION: u32 = 2;
 const STORAGE_VERSION: u32 = 1;
 const VERSION_KEY: Symbol = symbol_short!("ver");
@@ -115,26 +116,14 @@ pub enum VotingError {
     WeightOutOfRange = 27,
     /// Invalid domain tag
     InvalidDomainTag = 28,
-    /// Quadratic proposal voted through non-quadratic entrypoint
-    NotQuadraticProposal = 29,
-    /// Candidate index is outside the configured candidate range
-    InvalidCandidateIndex = 30,
-    /// Vote tally arithmetic overflowed
-    TallyOverflow = 31,
-    RandomnessCommitClosed = 32,
-    RandomnessAlreadyCommitted = 33,
-    RandomnessParticipantLimit = 34,
-    RandomnessRevealClosed = 35,
-    RandomnessCommitmentMissing = 36,
-    RandomnessRevealMismatch = 37,
-    RandomnessAlreadyRevealed = 38,
-    CandidateSeedFinalized = 39,
-    InsufficientRandomness = 40,
-    VdfInvalidDelay = 41,
-    VdfAlreadySubmitted = 42,
-    VdfDelayNotElapsed = 43,
-    VdfInputNotAvailable = 44,
-    VdfVerificationFailed = 45,
+    /// VK proposal pending for this DAO
+    VkProposalPending = 29,
+    /// Circuit registry VK proposal not found
+    VkProposalNotFound = 30,
+    /// VK proposal timelock not elapsed
+    VkProposalTimelockNotElapsed = 31,
+    /// VK proposal quorum not met
+    VkProposalQuorumNotMet = 32,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -205,6 +194,7 @@ pub enum DataKey {
     VerifyOverride,
     DaoCurrentCircuit(u64), // dao_id -> current circuit_id string
     DaoMigration(u64),      // dao_id -> MigrationInfo
+    DaoVkProposal(u64),     // dao_id -> pending VK proposal ID from circuit-registry
     /// Flash loan protection: balance snapshot for token-gated proposals
     BalanceSnapshot(u64, u64), // (dao_id, proposal_id) -> BalanceSnapshotInfo
     /// Election configuration including token-gating parameters
@@ -385,6 +375,32 @@ pub enum CircuitType {
 pub struct CircuitVKResult {
     pub vk: VerificationKey,
     pub num_public_signals: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VkProposalStatus {
+    Pending,
+    Approved,
+    Executed,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VkProposal {
+    pub id: u32,
+    pub circuit_id: String,
+    pub circuit_type: CircuitType,
+    pub new_vk: VerificationKey,
+    pub new_wasm_hash: BytesN<32>,
+    pub proposed_by: Address,
+    pub proposed_at: u64,
+    pub execute_after: u64,
+    pub required_approvals: u32,
+    pub approvals: u32,
+    pub status: VkProposalStatus,
+    pub dao_id: Option<u64>,
 }
 
 #[contracttype]
@@ -2739,6 +2755,55 @@ impl Voting {
             ],
         );
         result.vk
+    }
+
+    /// Check if there is a pending VK upgrade proposal for this DAO in the circuit-registry.
+    /// Returns Some(proposal_id) if pending, None otherwise.
+    pub fn get_pending_vk_proposal(env: Env, dao_id: u64) -> Option<u32> {
+        Self::bump_instance(&env);
+        let circuit_registry: Address = match env.storage().instance().get(&CIRCUIT_REGISTRY) {
+            Some(addr) => addr,
+            None => return None,
+        };
+
+        let result: Option<VkProposal> = env.invoke_contract(
+            &circuit_registry,
+            &Symbol::new(env, "get_dao_vk_proposal"),
+            soroban_sdk::vec![env, dao_id.into_val(env)],
+        );
+        result.and_then(|p| {
+            if p.status == VkProposalStatus::Pending {
+                Some(p.id)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Check if a VK proposal has met its timelock and quorum.
+    /// Returns true if the proposal is ready to be executed.
+    pub fn is_vk_proposal_ready(env: Env, proposal_id: u32) -> bool {
+        Self::bump_instance(&env);
+        let circuit_registry: Address = match env.storage().instance().get(&CIRCUIT_REGISTRY) {
+            Some(addr) => addr,
+            None => return false,
+        };
+
+        let result: Option<VkProposal> = env.invoke_contract(
+            &circuit_registry,
+            &Symbol::new(env, "get_vk_proposal"),
+            soroban_sdk::vec![env, proposal_id.into_val(env)],
+        );
+
+        match result {
+            Some(proposal) => {
+                let now = env.ledger().timestamp();
+                proposal.status == VkProposalStatus::Pending
+                    && now >= proposal.execute_after
+                    && proposal.approvals >= proposal.required_approvals
+            }
+            None => false,
+        }
     }
 
     fn check_migration_window(env: &Env, dao_id: u64) -> Option<(String, String)> {

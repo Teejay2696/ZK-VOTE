@@ -258,12 +258,26 @@ export interface DaoMigration {
   inOverlapWindow: boolean;
 }
 
+export interface VkProposal {
+  id: number;
+  circuitId: string;
+  circuitType: "Vote" | "Comment";
+  proposedBy: string;
+  proposedAt: number;
+  executeAfter: number;
+  requiredApprovals: number;
+  approvals: number;
+  status: "Pending" | "Approved" | "Executed" | "Cancelled";
+  daoId?: number;
+}
+
 export interface CircuitStatusResponse {
   daoId: number;
   circuitType: "Vote" | "Comment";
   currentCircuit: string;
   availableCircuits: CircuitInfo[];
   migration?: DaoMigration;
+  pendingVkProposal?: VkProposal;
 }
 
 export const CIRCUIT_VERSIONS = {
