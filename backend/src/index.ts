@@ -95,9 +95,7 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
-  sybilRoutes,
-  vdfRoutes,
-  delegationRoutes,
+  eventsRoutes,
 } from "./routes/index.js";
 import metricsRoutes from "./routes/metrics.js";
 import remediationRoutes from "./routes/remediation.js";
@@ -268,9 +266,7 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
-app.use(sybilRoutes);
-app.use(noStore, vdfRoutes);
-app.use(noStore, delegationRoutes);
+app.use(eventsRoutes);
 
 // Global error handler (must be last)
 app.use(errorHandler);
@@ -345,17 +341,11 @@ async function gracefulShutdown(reason: string): Promise<void> {
   const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
 
   clearTimeout(forceExitTimer);
-  if (!drained) {
-    log("error", "shutdown_drain_timeout", {
-      pendingSequenceLockOps: getPendingSequenceLockOps(),
-    });
-  }
   log("info", "shutdown_complete", {
     reason,
-    cleanDrain: drained,
     pid: process.pid,
   });
-  process.exit(drained ? 0 : 1);
+  process.exit(0);
 }
 
 async function startBackgroundServices(): Promise<void> {
