@@ -33,6 +33,7 @@ pub enum RegistryError {
 pub enum CircuitType {
     Vote,
     Comment,
+    Tally,
 }
 
 #[contracttype]
