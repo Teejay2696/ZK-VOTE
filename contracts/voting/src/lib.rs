@@ -115,77 +115,26 @@ pub enum VotingError {
     WeightOutOfRange = 27,
     /// Invalid domain tag
     InvalidDomainTag = 28,
-
-    // ── Variants referenced across the contract but never declared ─────────
-    //
-    // `panic_with_error!(&env, VotingError::…)` call sites for all of these
-    // already existed in `lib.rs` and `quadratic.rs`, so the crate did not
-    // build. They are declared here rather than in a separate change because
-    // the VDF and quadratic paths this PR extends are exactly the paths that
-    // reference them.
-    /// Contract is paused by the guardian.
-    ContractPaused = 29,
-    /// Caller is not the guardian.
-    NotGuardian = 30,
-    RandomnessCommitClosed = 31,
-    RandomnessRevealClosed = 32,
+    /// Quadratic proposal voted through non-quadratic entrypoint
+    NotQuadraticProposal = 29,
+    /// Candidate index is outside the configured candidate range
+    InvalidCandidateIndex = 30,
+    /// Vote tally arithmetic overflowed
+    TallyOverflow = 31,
+    RandomnessCommitClosed = 32,
     RandomnessAlreadyCommitted = 33,
-    RandomnessCommitmentMissing = 34,
-    RandomnessRevealMismatch = 35,
-    CandidateSeedFinalized = 36,
-    InsufficientRandomness = 37,
+    RandomnessParticipantLimit = 34,
+    RandomnessRevealClosed = 35,
+    RandomnessCommitmentMissing = 36,
+    RandomnessRevealMismatch = 37,
     RandomnessAlreadyRevealed = 38,
-    RandomnessParticipantLimit = 39,
-    TooManyActiveProposals = 40,
-    ProposalCooldownActive = 41,
-    InvalidProposalDeposit = 42,
-    ProposalHasVotes = 43,
-    VotingNotStarted = 44,
-    ElectionDurationTooShort = 45,
-    ElectionDurationTooLong = 46,
-    InvalidNoticePeriod = 47,
-    InvalidRegistrationPeriod = 48,
-    InvalidRegistrationGap = 49,
-    /// Regular `vote` called on a Quadratic proposal (use `cast_qv_vote`), or
-    /// `cast_qv_vote` called on a non-Quadratic proposal
-    NotQuadraticProposal = 50,
-    /// Quadratic-voting verification key not set for this DAO
-    QvVkNotSet = 51,
-    /// Quadratic ballot exceeds the fixed credit budget (sum of squares > MAX_QV_BUDGET)
-    QvBudgetExceeded = 52,
-    /// Quadratic tally verification key not set for this DAO
-    QvTallyVkNotSet = 53,
-    /// Tally proposal_ids / tallies vectors have mismatched or empty length
-    QvTallyLengthMismatch = 54,
-    /// Candidate index >= numCandidates configured for this election
-    InvalidCandidateIndex = 65,
-    UpgradeVersionMismatch = 66,
-    StorageVersionDowngrade = 67,
-    UpgradePayloadTooLarge = 68,
-    /// Reentrant call detected (defense-in-depth against cross-contract reentrancy)
-    ReentrantCall = 56,
-    /// VDF proof verification failed
-    VdfVerificationFailed = 57,
-    /// VDF output already submitted for this election
-    VdfAlreadySubmitted = 58,
-    /// VDF delay period has not elapsed yet
-    VdfDelayNotElapsed = 59,
-    /// VDF delay parameter is invalid
-    VdfInvalidDelay = 60,
-    /// VDF input (block hash) is not available
-    VdfInputNotAvailable = 61,
-    /// Invalid Nova recursive proof or tally verification failure
-    RecursiveProofInvalid = 62,
-    /// Vote tally increment overflowed maximum integer capacity
-    TallyOverflow = 55,
-    /// Merkle root locked because proposal transitioned out of Registration phase
-    MerkleRootLocked = 63,
-    /// Commitment window for root updates has expired
-    CommitmentWindowExpired = 64,
-    /// Relayer address is zero or not in BN254 scalar field
-    InvalidRelayerAddress = 69,
-    /// Relayer address in proof does not match actual relayer submitting transaction
-    RelayerMismatch = 70,
+    CandidateSeedFinalized = 39,
+    InsufficientRandomness = 40,
+    VdfInvalidDelay = 41,
+    VdfAlreadySubmitted = 42,
+    VdfDelayNotElapsed = 43,
+    VdfInputNotAvailable = 44,
+    VdfVerificationFailed = 45,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -2131,8 +2080,16 @@ impl Voting {
         );
     }
 
-    /// Get proposal info
-    pub fn get_proposal(env: Env, dao_id: u64, proposal_id: u64) -> ProposalInfo {
+    /// Cast a BLS12-381-backed anonymous vote.
+    pub fn vote_bls381(
+        env: Env,
+        dao_id: u64,
+        proposal_id: u64,
+        vote_choice: bool,
+        nullifier: U256,
+        root: U256,
+        proof: ProofBls381,
+    ) {
         Self::bump_instance(&env);
         Self::require_not_paused(&env);
 

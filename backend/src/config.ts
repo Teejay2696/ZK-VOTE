@@ -487,6 +487,7 @@ export const config = {
   rewardsContractId: validatedEnv.REWARDS_CONTRACT_ID,
   bridgeContractId: process.env.BRIDGE_CONTRACT_ID,
   circuitRegistryContractId: process.env.CIRCUIT_REGISTRY_CONTRACT_ID,
+  rewardsContractId: validatedEnv.REWARDS_CONTRACT_ID,
 
   // VK Version
   staticVkVersion: validatedEnv.VOTING_VK_VERSION,
@@ -708,16 +709,28 @@ export const BN254_SCALAR_FIELD = BigInt(
  */
 export function validateEnv(): void {
   const errors: string[] = [];
+  const missing: string[] = [];
 
-  if (!config.votingContractId) errors.push("VOTING_CONTRACT_ID is required");
-  if (!config.treeContractId) errors.push("TREE_CONTRACT_ID is required");
-  if (!config.commentsContractId)
+  if (!config.votingContractId) {
+    missing.push("VOTING_CONTRACT_ID");
+    errors.push("VOTING_CONTRACT_ID is required");
+  }
+  if (!config.treeContractId) {
+    missing.push("TREE_CONTRACT_ID");
+    errors.push("TREE_CONTRACT_ID is required");
+  }
+  if (!config.commentsContractId) {
+    missing.push("COMMENTS_CONTRACT_ID");
     errors.push("COMMENTS_CONTRACT_ID is required");
-  if (!config.relayerSecretKey) errors.push("RELAYER_SECRET_KEY is required");
-  // AUTH_MASTER_KEY is a production-only control-plane credential; tests and
-  // local dev don't need it (kept out of the critical path in test mode).
-  if (!config.authMasterKey && !config.testMode)
+  }
+  if (!config.relayerSecretKey) {
+    missing.push("RELAYER_SECRET_KEY");
+    errors.push("RELAYER_SECRET_KEY is required");
+  }
+  if (!config.authMasterKey) {
+    missing.push("AUTH_MASTER_KEY");
     errors.push("AUTH_MASTER_KEY is required");
+  }
 
   if (config.votingContractId && !isValidContractId(config.votingContractId)) {
     errors.push(
@@ -731,25 +744,41 @@ export function validateEnv(): void {
     );
   }
 
-  const missing = errors.filter(e => e.includes("is required")).map(e => e.split(" ")[0]);
-  const criticalKeys = ["VOTING_CONTRACT_ID", "TREE_CONTRACT_ID", "RELAYER_SECRET_KEY", "RELAYER_AUTH_TOKEN"];
-  const criticalMissing = missing.filter((k: string) => criticalKeys.includes(k));
-  const nonCriticalMissing = missing.filter((k: string) => !criticalKeys.includes(k));
+  const criticalKeys = [
+    "VOTING_CONTRACT_ID",
+    "TREE_CONTRACT_ID",
+    "RELAYER_SECRET_KEY",
+    "RELAYER_AUTH_TOKEN",
+  ];
+  const criticalMissing = missing.filter((k) => criticalKeys.includes(k));
+  const nonCriticalMissing = missing.filter((k) => !criticalKeys.includes(k));
 
   if (criticalMissing.length > 0) {
     console.error(
-      JSON.stringify({ level: "error", event: "missing_env", missing: criticalMissing }),
+      JSON.stringify({
+        level: "error",
+        event: "missing_env",
+        missing: criticalMissing,
+      }),
     );
   }
 
   if (nonCriticalMissing.length > 0) {
     if (config.testMode) {
       console.warn(
-        JSON.stringify({ level: "warn", event: "missing_optional_env_in_test_mode", missing: nonCriticalMissing }),
+        JSON.stringify({
+          level: "warn",
+          event: "missing_optional_env_in_test_mode",
+          missing: nonCriticalMissing,
+        }),
       );
     } else {
       console.error(
-        JSON.stringify({ level: "error", event: "missing_env", missing: nonCriticalMissing }),
+        JSON.stringify({
+          level: "error",
+          event: "missing_env",
+          missing: nonCriticalMissing,
+        }),
       );
       console.error("\nRun ./scripts/init-local.sh to generate backend/.env");
       process.exit(1);

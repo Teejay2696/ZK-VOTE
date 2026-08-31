@@ -1217,7 +1217,7 @@ impl MembershipTree {
                 .storage()
                 .persistent()
                 .get(&key)
-                .unwrap_or_else(|| U256::from_u32(&env, 0));
+                .unwrap_or_else(|| U256::zero(&env));
             current_value == Self::zero_value(&env)
         } else {
             true

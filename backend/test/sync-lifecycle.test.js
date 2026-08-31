@@ -73,10 +73,6 @@ test("sync services handle missing contracts and timer lifecycle", async (t) => 
   sync.startMembershipSync();
 
   assert.equal(intervalCallbacks.length, 4);
-  // Four deferred callbacks are expected, not two: two membership initial-sync
-  // setTimeouts (startMembershipSync is invoked twice, each call schedules one)
-  // plus one SingleFlight timeout guard per syncDaosFromContract invocation
-  // (the direct call above and the one inside startDaoSync).
   assert.equal(timeoutCallbacks.length, 4);
 
   for (const callback of timeoutCallbacks) {

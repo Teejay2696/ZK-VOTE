@@ -6,37 +6,11 @@
  * to check revocation status.
  */
 
-import type { Database as DatabaseType } from "better-sqlite3";
-import type { LoggerPort } from "./interfaces.js";
-
-/**
- * Dependencies injected via `initExclusionProof` (#358) so this module never
- * imports the `db.js`/`logger.js` module singletons directly.
- */
-export interface ExclusionProofDeps {
-  /** Read connection to the events/metadata store. */
-  getDb(): DatabaseType;
-  /** Structured logger (called as `deps.log(level, event, meta)`). */
-  log: LoggerPort["log"];
-}
-
-let proofDeps: ExclusionProofDeps | null = null;
-
-/** Explicitly wire the exclusion-proof service (composition root only). */
-export function initExclusionProof(d: ExclusionProofDeps): void {
-  proofDeps = d;
-}
-
-function deps(): ExclusionProofDeps {
-  if (!proofDeps) {
-    throw new Error(
-      "exclusion-proof: initExclusionProof() must be called before use",
-    );
-  }
-  return proofDeps;
-}
+import { getDb } from "./db.js";
+import { log } from "./logger.js";
 
 export interface ExclusionProof {
+  proof: unknown;
   publicInputs: {
     historicalRoot: string;
     currentRoot: string;
@@ -58,9 +32,8 @@ export async function verifyExclusionProof(
   _treeContractId: string,
 ): Promise<{ valid: boolean; reason?: string }> {
   try {
-    const { commitment, daoId, historicalRoot, currentRoot } = proof.publicInputs;
-    if (!historicalRoot || !currentRoot) return { valid: false, reason: "Invalid root" };
-    if (!isValidFieldElement(commitment)) return { valid: false, reason: "Invalid commitment format" };
+    const { commitment, daoId, historicalRoot, currentRoot } =
+      proof.publicInputs;
 
     deps().log("info", "exclusion_proof_verification_started", {
       commitment: commitment.slice(0, 10),
@@ -152,7 +125,7 @@ async function checkRevocationStatus(
 
   const revocationRecord = db
     .prepare(
-      "SELECT revoked_at, reinstated_at FROM member_revocations WHERE commitment = ? AND dao_id = ? LIMIT 1",
+      "SELECT * FROM member_revocations WHERE commitment = ? AND dao_id = ? LIMIT 1",
     )
     .get(commitment, daoId) as
     | { revoked_at: number; reinstated_at: number | null }
@@ -192,10 +165,11 @@ export async function recordRevocation(
 
   try {
     db.prepare(
-      "INSERT INTO member_revocations (commitment, dao_id, revoked_at, created_at) VALUES (?, ?, ?, ?)",
+      `INSERT INTO member_revocations (commitment, dao_id, revoked_at, created_at)
+       VALUES (?, ?, ?, ?)`,
     ).run(commitment, daoId, timestamp, new Date().toISOString());
   } catch (err) {
-    deps().log("error", "revocation_record_failed", {
+    log("error", "revocation_record_failed", {
       commitment: commitment.slice(0, 10),
       error: (err as Error).message,
     });
@@ -207,14 +181,14 @@ export async function recordReinstatement(
   daoId: number,
   timestamp: number,
 ): Promise<void> {
-  const db = deps().getDb();
+  const db = getDb();
 
   try {
     db.prepare(
       "UPDATE member_revocations SET reinstated_at = ? WHERE commitment = ? AND dao_id = ?",
     ).run(timestamp, commitment, daoId);
   } catch (err) {
-    deps().log("error", "reinstatement_record_failed", {
+    log("error", "reinstatement_record_failed", {
       commitment: commitment.slice(0, 10),
       error: (err as Error).message,
     });

@@ -12,6 +12,7 @@ import cors from "cors";
 import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 
+// Configuration and types
 import { config, validateEnv, isValidContractId } from "./config.js";
 // Composition root (#358) — explicit construction/wiring of service deps.
 import { buildAppServices } from "./composition-root.js";
@@ -95,7 +96,10 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
-  eventsRoutes,
+  metricsRoutes,
+  remediationRoutes,
+  adminRoutes,
+  registerShutdownHandler,
 } from "./routes/index.js";
 import metricsRoutes from "./routes/metrics.js";
 import remediationRoutes from "./routes/remediation.js";
@@ -258,6 +262,7 @@ app.use(metricsRoutes);
 app.use(healthRoutes);
 app.use(analyticsRoutes);
 app.use(remediationRoutes);
+app.use(adminRoutes);
 app.use(noStore, votingRoutes);
 app.use(daoRoutes);
 app.use(ipfsRoutes);
@@ -266,7 +271,7 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
-app.use(eventsRoutes);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
 // Global error handler (must be last)
 app.use(errorHandler);
@@ -339,6 +344,7 @@ async function gracefulShutdown(reason: string): Promise<void> {
 
   await httpClosed;
   const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
+  closeDb();
 
   clearTimeout(forceExitTimer);
   log("info", "shutdown_complete", {

@@ -328,6 +328,7 @@ export const voteSchema = z
     nullifier: bn254Field.optional(),
     root: bn254Field.optional(),
     proof: groth16Proof.optional(),
+    redundantProof: groth16Proof.optional(),
     nonce: z.string().optional(),
     timestamp: z.number().int().optional(),
     walletAddress: z.string().optional(),
