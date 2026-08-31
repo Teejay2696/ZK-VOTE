@@ -71,7 +71,7 @@ function MigrationTimeline({
 function PendingVkProposal({
   proposal,
 }: {
-  proposal: NonNullable<CircuitStatusResponse["pendingVkProposal"]>;
+  proposal: VkProposal;
 }) {
   const executeDate = new Date(proposal.executeAfter * 1000);
   const [now] = useState(() => Date.now());
