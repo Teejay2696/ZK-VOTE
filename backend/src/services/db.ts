@@ -22,6 +22,7 @@ import {
   profileEventQueries,
 } from "./dbMonitor.js";
 import { migrateUp } from "./migrate.js";
+import { assertBackendConfigured } from "./dbDialect.js";
 import { kysely } from "./kysely.js";
 import { sql } from "kysely";
 import {
@@ -1060,7 +1061,12 @@ function getAllPartitionDaoIds(database: DatabaseType): number[] {
  * @returns The write connection (backward compatible with prior callers).
  */
 export function initDb(dbPath?: string): DatabaseType {
-  const dbFile = dbPath ?? activeDbFile ?? DB_FILE;
+  // Fail fast on a misconfigured backend (issue #305) before any handle is
+  // opened, so DB_BACKEND=postgres without DATABASE_URL is a boot error rather
+  // than a silent fallback to the embedded SQLite file.
+  assertBackendConfigured();
+
+  const dbFile = dbPath ?? DB_FILE;
 
   // Reuse open handles for the same file
   if (writeDb && activeDbFile === dbFile) {

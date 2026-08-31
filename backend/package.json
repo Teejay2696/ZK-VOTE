@@ -25,6 +25,8 @@
     "migrate:down": "tsx src/services/migrate.ts down",
     "migrate:status": "tsx src/services/migrate.ts status",
     "migrate:dry-run": "tsx src/services/migrate.ts dry-run",
+    "migrate:parity": "tsx src/services/migrate.ts parity",
+    "db:benchmark": "tsx scripts/db-benchmark.ts",
     "token:create": "tsx src/token-manager.ts create",
     "token:list": "tsx src/token-manager.ts list",
     "token:revoke": "tsx src/token-manager.ts revoke",

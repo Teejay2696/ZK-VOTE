@@ -48,6 +48,15 @@ pub use zkvote_groth16::{
 // ZK quadratic voting with range proofs (issue #50)
 mod quadratic;
 
+// Sybil-resistance: SBT-age weighting + reputation score (issue #301)
+mod sybil;
+
+// VDF-gated vote commit–reveal (issue #302)
+mod commit_reveal;
+
+// Anonymous vote delegation / liquid democracy (issue #304)
+mod delegation;
+
 const TREE_CONTRACT: Symbol = symbol_short!("tree");
 const REGISTRY: Symbol = symbol_short!("registry");
 const CIRCUIT_REGISTRY: Symbol = symbol_short!("circ_reg");
@@ -100,6 +109,118 @@ pub enum VotingError {
     WeightOutOfRange = 27,
     /// Invalid domain tag
     InvalidDomainTag = 28,
+
+    // ── Variants referenced across the contract but never declared ─────────
+    //
+    // `panic_with_error!(&env, VotingError::…)` call sites for all of these
+    // already existed in `lib.rs` and `quadratic.rs`, so the crate did not
+    // build. They are declared here rather than in a separate change because
+    // the VDF and quadratic paths this PR extends are exactly the paths that
+    // reference them.
+    /// Contract is paused by the guardian.
+    ContractPaused = 29,
+    /// Caller is not the guardian.
+    NotGuardian = 30,
+    /// Reentrant call detected by the contract-level lock.
+    ReentrantCall = 31,
+    /// Vote tally would overflow u64.
+    TallyOverflow = 32,
+    /// Candidate index is outside [0, num_candidates).
+    InvalidCandidateIndex = 33,
+    /// Proposal uses `VoteMode::Quadratic`; use `cast_qv_vote` instead.
+    NotQuadraticProposal = 34,
+    /// Quadratic-voting VK is not set for this DAO.
+    QvVkNotSet = 35,
+    /// Quadratic-tally VK is not set for this DAO.
+    QvTallyVkNotSet = 36,
+    /// Quadratic ballot exceeds the fixed credit budget.
+    QvBudgetExceeded = 37,
+    /// Submitted QV tally length does not match the round's proposal count.
+    QvTallyLengthMismatch = 38,
+    /// Randomness commit window has closed.
+    RandomnessCommitClosed = 39,
+    /// Randomness reveal window has closed.
+    RandomnessRevealClosed = 40,
+    /// This address already committed randomness for this election.
+    RandomnessAlreadyCommitted = 41,
+    /// This address already revealed randomness for this election.
+    RandomnessAlreadyRevealed = 42,
+    /// No randomness commitment exists for this address.
+    RandomnessCommitmentMissing = 43,
+    /// Revealed value does not match the stored commitment.
+    RandomnessRevealMismatch = 44,
+    /// Too many randomness participants for this election.
+    RandomnessParticipantLimit = 45,
+    /// Fewer randomness reveals than the minimum required.
+    InsufficientRandomness = 46,
+    /// Candidate seed has already been finalized.
+    CandidateSeedFinalized = 47,
+    /// Merkle root can no longer be updated for this election.
+    MerkleRootLocked = 48,
+    /// Root update attempted after the commitment window expired.
+    CommitmentWindowExpired = 49,
+    /// Recursive tally proof failed verification.
+    RecursiveProofInvalid = 50,
+    /// Upgrade payload exceeds the maximum size.
+    UpgradePayloadTooLarge = 51,
+    /// Upgrade target version does not match the contract version.
+    UpgradeVersionMismatch = 52,
+    /// Refused to migrate storage to an older layout version.
+    StorageVersionDowngrade = 53,
+    /// VDF delay parameter outside [MIN_VDF_ITERATIONS, MAX_VDF_ITERATIONS].
+    VdfInvalidDelay = 54,
+    /// VDF delay has not elapsed yet.
+    VdfDelayNotElapsed = 55,
+    /// VDF output has already been submitted for this election.
+    VdfAlreadySubmitted = 56,
+    /// VDF input seed has not been derived for this election.
+    VdfInputNotAvailable = 57,
+    /// Submitted VDF output failed on-chain verification.
+    VdfVerificationFailed = 58,
+
+    // ── Sybil-resistance layer (#301) ──────────────────────────────────────
+    /// Submitted weight exceeds the election's Sybil weight cap.
+    WeightAboveSybilCap = 60,
+    /// Weighted voting is not enabled for this election.
+    WeightedVotingDisabled = 61,
+
+    // ── VDF-gated commit–reveal (#302) ─────────────────────────────────────
+    /// Commit–reveal is not configured for this election.
+    CommitRevealNotConfigured = 70,
+    /// The commit phase has closed.
+    CommitPhaseClosed = 71,
+    /// The reveal phase has not opened — the VDF delay has not elapsed.
+    RevealPhaseNotOpen = 72,
+    /// The reveal phase has closed.
+    RevealPhaseClosed = 73,
+    /// A commitment already exists for this nullifier.
+    CommitAlreadyExists = 74,
+    /// No commitment exists for this nullifier.
+    VoteCommitmentNotFound = 75,
+    /// The revealed opening does not match the stored commitment.
+    VoteCommitmentMismatch = 76,
+    /// This commitment has already been revealed.
+    AlreadyRevealed = 77,
+    /// Reveal attempted before the election's VDF output was finalized.
+    VdfNotFinalized = 78,
+    /// The commit/reveal schedule is not ordered (reveal opens before commit closes).
+    InvalidRevealSchedule = 79,
+
+    // ── Anonymous delegation (#304) ────────────────────────────────────────
+    /// This delegation commitment is already registered.
+    DelegationExists = 80,
+    /// No delegation is registered for this commitment.
+    DelegationNotFound = 81,
+    /// The delegation has been revoked by its delegator.
+    DelegationRevoked = 82,
+    /// This delegation has already been spent on a vote.
+    DelegationAlreadyUsed = 83,
+    /// Delegation is not enabled for this election.
+    DelegationDisabled = 84,
+    /// The reclaim nullifier has already been spent.
+    ReclaimNullifierUsed = 85,
+    /// Delegation verification key is not set for this DAO.
+    DelegationVkNotSet = 86,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -228,6 +349,50 @@ pub enum DataKey {
     UpgradeMigration(u32),
     /// Rollback marker by rolled-back contract version.
     UpgradeRollback(u32),
+
+    // ── Sybil-resistance layer (#301) ──────────────────────────────────────
+    // Appended at the end so existing storage discriminants stay stable.
+    /// Weighted tally: (dao_id, proposal_id) -> WeightedTally
+    WeightedTally(u64, u64),
+    /// Per-election Sybil weight cap: (dao_id, proposal_id) -> u32
+    SybilWeightCap(u64, u64),
+    /// Anchored eligibility-attestation root the weighted-vote circuit proves
+    /// against: (dao_id, proposal_id) -> U256
+    AttestationRoot(u64, u64),
+    /// Sybil-weighted vote VK: dao_id -> VerificationKey
+    SybilVotingKey(u64),
+
+    // ── VDF-gated commit–reveal (#302) ─────────────────────────────────────
+    /// Commit–reveal schedule: (dao_id, proposal_id) -> CommitRevealConfig
+    CommitRevealConfig(u64, u64),
+    /// Published vote commitment: (dao_id, proposal_id, nullifier) -> BytesN<32>
+    VoteCommit(u64, u64, U256),
+    /// Reveal marker: (dao_id, proposal_id, nullifier) -> bool
+    VoteRevealed(u64, u64, U256),
+    /// Number of commitments accepted: (dao_id, proposal_id) -> u64
+    VoteCommitCount(u64, u64),
+    /// Commit-phase eligibility VK: dao_id -> VerificationKey
+    CommitVotingKey(u64),
+
+    // ── Anonymous delegation (#304) ────────────────────────────────────────
+    /// Registered delegation: (dao_id, proposal_id, commitment) -> DelegationRecord
+    Delegation(u64, u64, U256),
+    /// Delegation spend marker: (dao_id, proposal_id, delegation_nullifier) -> bool
+    DelegationNullifier(u64, u64, U256),
+    /// Reclaim spend marker: (dao_id, proposal_id, reclaim_nullifier) -> bool
+    ReclaimNullifier(u64, u64, U256),
+    /// Delegation accumulator root: (dao_id, proposal_id) -> U256
+    DelegationRoot(u64, u64),
+    /// Registered delegation count: (dao_id, proposal_id) -> u64
+    DelegationCount(u64, u64),
+    /// Votes cast via delegation: (dao_id, proposal_id) -> u64
+    DelegatedVoteCount(u64, u64),
+    /// Delegation verification keys: dao_id -> VerificationKey, per circuit role
+    DelegationRegisterVk(u64),
+    DelegationVoteVk(u64),
+    DelegationRevokeVk(u64),
+    /// Whether delegation is enabled for an election: (dao_id, proposal_id) -> bool
+    DelegationEnabled(u64, u64),
 }
 
 /// A single quadratic-voting ballot as stored on-chain.
@@ -252,6 +417,60 @@ pub struct RecursiveTallyInfo {
     pub no_votes: u64,
     pub final_nullifier_acc: U256,
     pub finalized_at: u64,
+}
+
+// ── Sybil-resistance layer (#301) ──────────────────────────────────────────
+
+/// Weighted tally alongside the plain head-count.
+///
+/// Kept separate from `ProposalInfo.yes_votes`/`no_votes` rather than replacing
+/// them: a DAO needs both numbers to reason about a result — the weighted total
+/// is what decides the vote, the head-count is what tells you whether the
+/// weighting changed the outcome.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeightedTally {
+    pub yes_weight: u64,
+    pub no_weight: u64,
+    pub yes_ballots: u64,
+    pub no_ballots: u64,
+}
+
+// ── VDF-gated commit–reveal (#302) ─────────────────────────────────────────
+
+/// The commit–reveal schedule for one election.
+///
+/// The reveal phase does not open on `reveal_opens_at` alone: the election's
+/// VDF output must also have been submitted and verified. The timestamp is the
+/// *earliest* the phase can open; the VDF is what makes the delay verifiable
+/// rather than merely asserted by the ledger clock.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitRevealConfig {
+    /// Last timestamp at which a commitment is accepted.
+    pub commit_deadline: u64,
+    /// Earliest timestamp at which a reveal is accepted.
+    pub reveal_opens_at: u64,
+    /// Last timestamp at which a reveal is accepted. 0 means no deadline.
+    pub reveal_closes_at: u64,
+    /// Whether the VDF output must be finalized before reveals open.
+    pub require_vdf: bool,
+}
+
+// ── Anonymous delegation (#304) ────────────────────────────────────────────
+
+/// A registered delegation of one member's vote on one proposal.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DelegationRecord {
+    /// Opaque handle for the delegate: `Poseidon(tag_domain, delegate_secret, dao_id)`.
+    pub delegate_tag: U256,
+    /// Ledger timestamp of registration.
+    pub registered_at: u64,
+    /// Revoked by the delegator; the delegate can no longer spend it.
+    pub revoked: bool,
+    /// Already spent on a vote.
+    pub used: bool,
 }
 
 #[contracttype]
@@ -514,6 +733,100 @@ pub struct QvVoteEvent {
     pub proposal_id: u64,
     pub nullifier: U256,
     pub total_credits_spent: u64,
+}
+
+// ── Sybil-resistance layer (#301) ──────────────────────────────────────────
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeightedVoteEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub choice: bool,
+    pub weight: u32,
+    pub nullifier: U256,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SybilWeightCapSetEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub cap: u32,
+}
+
+// ── VDF-gated commit–reveal (#302) ─────────────────────────────────────────
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoteCommittedEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub nullifier: U256,
+    pub commit_index: u64,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoteRevealedEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub nullifier: U256,
+    pub choice: bool,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommitRevealConfiguredEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub commit_deadline: u64,
+    pub reveal_opens_at: u64,
+}
+
+// ── Anonymous delegation (#304) ────────────────────────────────────────────
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DelegationRegisteredEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub delegation_commitment: U256,
+    pub delegate_tag: U256,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DelegatedVoteEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub choice: bool,
+    pub delegation_nullifier: U256,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DelegationRevokedEvent {
+    #[topic]
+    pub dao_id: u64,
+    #[topic]
+    pub proposal_id: u64,
+    pub delegation_commitment: U256,
+    pub reclaim_nullifier: U256,
 }
 
 #[soroban_sdk::contractevent]

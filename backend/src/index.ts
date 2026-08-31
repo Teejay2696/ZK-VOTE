@@ -93,7 +93,9 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
-  analyticsRoutes,
+  sybilRoutes,
+  vdfRoutes,
+  delegationRoutes,
 } from "./routes/index.js";
 import metricsRoutes from "./routes/metrics.js";
 import remediationRoutes from "./routes/remediation.js";
@@ -262,7 +264,9 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
-app.use(analyticsRoutes);
+app.use(sybilRoutes);
+app.use(noStore, vdfRoutes);
+app.use(noStore, delegationRoutes);
 
 // Global error handler (must be last)
 app.use(errorHandler);
