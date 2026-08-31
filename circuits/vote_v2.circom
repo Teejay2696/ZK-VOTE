@@ -6,15 +6,17 @@ include "merkle_tree.circom";
 
 // DaoVote Anonymous Vote Circuit v2
 //
-// Adds chainId and familyNullifier domain separation while preserving the
-// same DOMAIN_TAG + blinding factor commitment scheme as the v1 vote circuit.
-// Upgraded from v1 which had 5 public signals.
+// Adds chainId as a public signal to prevent cross-chain replay attacks.
+// Adds numCandidates as a public signal to bind the election's candidate count
+// into the ZK proof, preventing circuit/contract candidate bound desync.
+// Adds relayerAddress to bind proofs to specific relayers (anti-front-running).
 //
-// Public signals: [root, nullifier, familyNullifier, daoId, proposalId, voteChoice, numCandidates, chainId, nonce]
+// Public signals: [root, nullifier, familyNullifier, daoId, proposalId, voteChoice, numCandidates, chainId, nonce, relayerAddress]
 // Private signals: secret, salt, blindingFactor, pathElements, pathIndices
 //
 // chainId prevents replay attacks: a proof generated for one chain
 // (e.g., testnet) cannot be replayed on another chain (e.g., mainnet).
+// relayerAddress prevents cross-relayer proof reuse and selective front-running.
 template VoteV2(levels) {
     var DOMAIN_TAG = 19666041591797403834655481403982443037438503980743793537655983658411276515161;
 
@@ -27,7 +29,8 @@ template VoteV2(levels) {
     signal input voteChoice;        // 0 = against, 1 = for
     signal input numCandidates;     // Total number of candidates (for range checks)
     signal input chainId;           // Chain identifier (prevents cross-chain replay)
-    signal input nonce;             // User vote nonce for replay separation
+    signal input nonce;             // Auto-incremented for each revote
+    signal input relayerAddress;    // Relayer address binding proof to specific relayer (anti-front-running)
 
     // Private inputs
     signal input secret;            // Voter's secret (like password)
@@ -82,4 +85,5 @@ template VoteV2(levels) {
 }
 
 // Default tree depth of 18 (supports ~262K members)
-component main {public [root, nullifier, familyNullifier, daoId, proposalId, voteChoice, numCandidates, chainId, nonce]} = VoteV2(18);
+// Public signals: [root, nullifier, familyNullifier, daoId, proposalId, voteChoice, numCandidates, chainId, nonce, relayerAddress] - 10 signals
+component main {public [root, nullifier, familyNullifier, daoId, proposalId, voteChoice, numCandidates, chainId, nonce, relayerAddress]} = VoteV2(18);

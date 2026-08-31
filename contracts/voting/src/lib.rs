@@ -121,106 +121,65 @@ pub enum VotingError {
     ContractPaused = 29,
     /// Caller is not the guardian.
     NotGuardian = 30,
-    /// Reentrant call detected by the contract-level lock.
-    ReentrantCall = 31,
-    /// Vote tally would overflow u64.
-    TallyOverflow = 32,
-    /// Candidate index is outside [0, num_candidates).
-    InvalidCandidateIndex = 33,
-    /// Proposal uses `VoteMode::Quadratic`; use `cast_qv_vote` instead.
-    NotQuadraticProposal = 34,
-    /// Quadratic-voting VK is not set for this DAO.
-    QvVkNotSet = 35,
-    /// Quadratic-tally VK is not set for this DAO.
-    QvTallyVkNotSet = 36,
-    /// Quadratic ballot exceeds the fixed credit budget.
-    QvBudgetExceeded = 37,
-    /// Submitted QV tally length does not match the round's proposal count.
-    QvTallyLengthMismatch = 38,
-    /// Randomness commit window has closed.
-    RandomnessCommitClosed = 39,
-    /// Randomness reveal window has closed.
-    RandomnessRevealClosed = 40,
-    /// This address already committed randomness for this election.
-    RandomnessAlreadyCommitted = 41,
-    /// This address already revealed randomness for this election.
-    RandomnessAlreadyRevealed = 42,
-    /// No randomness commitment exists for this address.
-    RandomnessCommitmentMissing = 43,
-    /// Revealed value does not match the stored commitment.
-    RandomnessRevealMismatch = 44,
-    /// Too many randomness participants for this election.
-    RandomnessParticipantLimit = 45,
-    /// Fewer randomness reveals than the minimum required.
-    InsufficientRandomness = 46,
-    /// Candidate seed has already been finalized.
-    CandidateSeedFinalized = 47,
-    /// Merkle root can no longer be updated for this election.
-    MerkleRootLocked = 48,
-    /// Root update attempted after the commitment window expired.
-    CommitmentWindowExpired = 49,
-    /// Recursive tally proof failed verification.
-    RecursiveProofInvalid = 50,
-    /// Upgrade payload exceeds the maximum size.
-    UpgradePayloadTooLarge = 51,
-    /// Upgrade target version does not match the contract version.
-    UpgradeVersionMismatch = 52,
-    /// Refused to migrate storage to an older layout version.
-    StorageVersionDowngrade = 53,
-    /// VDF delay parameter outside [MIN_VDF_ITERATIONS, MAX_VDF_ITERATIONS].
-    VdfInvalidDelay = 54,
-    /// VDF delay has not elapsed yet.
-    VdfDelayNotElapsed = 55,
-    /// VDF output has already been submitted for this election.
-    VdfAlreadySubmitted = 56,
-    /// VDF input seed has not been derived for this election.
-    VdfInputNotAvailable = 57,
-    /// Submitted VDF output failed on-chain verification.
-    VdfVerificationFailed = 58,
-
-    // ── Sybil-resistance layer (#301) ──────────────────────────────────────
-    /// Submitted weight exceeds the election's Sybil weight cap.
-    WeightAboveSybilCap = 60,
-    /// Weighted voting is not enabled for this election.
-    WeightedVotingDisabled = 61,
-
-    // ── VDF-gated commit–reveal (#302) ─────────────────────────────────────
-    /// Commit–reveal is not configured for this election.
-    CommitRevealNotConfigured = 70,
-    /// The commit phase has closed.
-    CommitPhaseClosed = 71,
-    /// The reveal phase has not opened — the VDF delay has not elapsed.
-    RevealPhaseNotOpen = 72,
-    /// The reveal phase has closed.
-    RevealPhaseClosed = 73,
-    /// A commitment already exists for this nullifier.
-    CommitAlreadyExists = 74,
-    /// No commitment exists for this nullifier.
-    VoteCommitmentNotFound = 75,
-    /// The revealed opening does not match the stored commitment.
-    VoteCommitmentMismatch = 76,
-    /// This commitment has already been revealed.
-    AlreadyRevealed = 77,
-    /// Reveal attempted before the election's VDF output was finalized.
-    VdfNotFinalized = 78,
-    /// The commit/reveal schedule is not ordered (reveal opens before commit closes).
-    InvalidRevealSchedule = 79,
-
-    // ── Anonymous delegation (#304) ────────────────────────────────────────
-    /// This delegation commitment is already registered.
-    DelegationExists = 80,
-    /// No delegation is registered for this commitment.
-    DelegationNotFound = 81,
-    /// The delegation has been revoked by its delegator.
-    DelegationRevoked = 82,
-    /// This delegation has already been spent on a vote.
-    DelegationAlreadyUsed = 83,
-    /// Delegation is not enabled for this election.
-    DelegationDisabled = 84,
-    /// The reclaim nullifier has already been spent.
-    ReclaimNullifierUsed = 85,
-    /// Delegation verification key is not set for this DAO.
-    DelegationVkNotSet = 86,
+    RandomnessCommitClosed = 31,
+    RandomnessRevealClosed = 32,
+    RandomnessAlreadyCommitted = 33,
+    RandomnessCommitmentMissing = 34,
+    RandomnessRevealMismatch = 35,
+    CandidateSeedFinalized = 36,
+    InsufficientRandomness = 37,
+    RandomnessAlreadyRevealed = 38,
+    RandomnessParticipantLimit = 39,
+    TooManyActiveProposals = 40,
+    ProposalCooldownActive = 41,
+    InvalidProposalDeposit = 42,
+    ProposalHasVotes = 43,
+    VotingNotStarted = 44,
+    ElectionDurationTooShort = 45,
+    ElectionDurationTooLong = 46,
+    InvalidNoticePeriod = 47,
+    InvalidRegistrationPeriod = 48,
+    InvalidRegistrationGap = 49,
+    /// Regular `vote` called on a Quadratic proposal (use `cast_qv_vote`), or
+    /// `cast_qv_vote` called on a non-Quadratic proposal
+    NotQuadraticProposal = 50,
+    /// Quadratic-voting verification key not set for this DAO
+    QvVkNotSet = 51,
+    /// Quadratic ballot exceeds the fixed credit budget (sum of squares > MAX_QV_BUDGET)
+    QvBudgetExceeded = 52,
+    /// Quadratic tally verification key not set for this DAO
+    QvTallyVkNotSet = 53,
+    /// Tally proposal_ids / tallies vectors have mismatched or empty length
+    QvTallyLengthMismatch = 54,
+    /// Candidate index >= numCandidates configured for this election
+    InvalidCandidateIndex = 65,
+    UpgradeVersionMismatch = 66,
+    StorageVersionDowngrade = 67,
+    UpgradePayloadTooLarge = 68,
+    /// Reentrant call detected (defense-in-depth against cross-contract reentrancy)
+    ReentrantCall = 56,
+    /// VDF proof verification failed
+    VdfVerificationFailed = 57,
+    /// VDF output already submitted for this election
+    VdfAlreadySubmitted = 58,
+    /// VDF delay period has not elapsed yet
+    VdfDelayNotElapsed = 59,
+    /// VDF delay parameter is invalid
+    VdfInvalidDelay = 60,
+    /// VDF input (block hash) is not available
+    VdfInputNotAvailable = 61,
+    /// Invalid Nova recursive proof or tally verification failure
+    RecursiveProofInvalid = 62,
+    /// Vote tally increment overflowed maximum integer capacity
+    TallyOverflow = 55,
+    /// Merkle root locked because proposal transitioned out of Registration phase
+    MerkleRootLocked = 63,
+    /// Commitment window for root updates has expired
+    CommitmentWindowExpired = 64,
+    /// Relayer address is zero or not in BN254 scalar field
+    InvalidRelayerAddress = 69,
+    /// Relayer address in proof does not match actual relayer submitting transaction
+    RelayerMismatch = 70,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -234,8 +193,8 @@ const MAX_CID_LEN: u32 = 64; // Max IPFS CID length (CIDv1 is ~59 chars)
 const MAX_UPGRADE_PAYLOAD_LEN: u32 = 4096;
 
 // Circuit constants
-/// Vote circuit public signals: root, nullifier, dao_id, proposal_id, vote_choice, num_candidates
-const NUM_PUBLIC_SIGNALS: u32 = 6;
+/// Vote circuit public signals: root, nullifier, dao_id, proposal_id, vote_choice, num_candidates, relayer_address
+const NUM_PUBLIC_SIGNALS: u32 = 7;
 // IC (inner commitment) vector length for Groth16 VK = num_public_inputs + 1
 const VOTE_CIRCUIT_IC_LEN: u32 = NUM_PUBLIC_SIGNALS + 1;
 pub const MAX_PAUSE_DURATION: u64 = 72 * 60 * 60;
@@ -2073,6 +2032,19 @@ impl Voting {
         let proposal_signal = U256::from_u128(&env, proposal_id as u128);
         let num_candidates_signal = U256::from_u32(&env, election_config.num_candidates);
 
+        // Extract relayer address from transaction signer (the one paying fees)
+        // In Soroban, this is typically the contract invoker, but we get it from the auth context
+        let relayer_address: Address = env.invoker().clone();
+        let relayer_signal = Self::address_to_u256(&env, &relayer_address);
+
+        // Validate relayer address is in BN254 scalar field
+        Self::assert_in_field(&env, &relayer_signal);
+
+        // Validate relayer address is non-zero
+        if relayer_signal == U256::from_u32(&env, 0) {
+            panic_with_error!(&env, VotingError::InvalidRelayerAddress);
+        }
+
         let pub_signals = soroban_sdk::vec![
             &env,
             root.clone(),
@@ -2081,6 +2053,7 @@ impl Voting {
             proposal_signal,
             vote_signal,
             num_candidates_signal,
+            relayer_signal,
         ];
 
         if !Self::verify_groth16(&env, &vk, &proof, &pub_signals) {
@@ -2276,6 +2249,18 @@ impl Voting {
         let proposal_signal = U256::from_u128(&env, proposal_id as u128);
         let num_candidates_signal = U256::from_u32(&env, election_config.num_candidates);
 
+        // Extract relayer address from transaction signer
+        let relayer_address: Address = env.invoker().clone();
+        let relayer_signal = Self::address_to_u256(&env, &relayer_address);
+
+        // Validate relayer address is in BLS12-381 scalar field
+        Self::assert_in_field_bls381(&env, &relayer_signal);
+
+        // Validate relayer address is non-zero
+        if relayer_signal == U256::from_u32(&env, 0) {
+            panic_with_error!(&env, VotingError::InvalidRelayerAddress);
+        }
+
         let pub_signals = soroban_sdk::vec![
             &env,
             root.clone(),
@@ -2284,6 +2269,7 @@ impl Voting {
             proposal_signal,
             vote_signal,
             num_candidates_signal,
+            relayer_signal,
         ];
 
         if !Self::verify_groth16_bls381(&env, &vk, &proof, &pub_signals) {
@@ -2418,6 +2404,14 @@ impl Voting {
         Self::bump_persistent(&env, &scoped_key);
         env.storage().persistent().remove(&legacy_key);
         true
+    }
+
+    /// Convert a Stellar address to a U256 field element
+    /// Hashes the address using Blake2-256 and converts to U256
+    fn address_to_u256(env: &Env, address: &Address) -> U256 {
+        let address_bytes = address.to_xdr(env);
+        let hash: BytesN<32> = env.crypto().sha256(&address_bytes);
+        U256::from_be_bytes(env, &hash.to_bytes(env))
     }
 
     /// Get tree contract address

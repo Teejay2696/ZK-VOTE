@@ -517,6 +517,13 @@ router.post(
       // Build contract call
       const contract = new StellarSdk.Contract(config.votingContractId!);
 
+      // Extract relayer address and convert to ScVal
+      const relayerAddress = relayerKeypair.publicKey();
+      const scRelayerAddress = StellarSdk.nativeToScVal(
+        relayerAddress,
+        { type: "address" },
+      );
+
       const args = [
         StellarSdk.nativeToScVal(daoId, { type: "u64" }),
         StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
