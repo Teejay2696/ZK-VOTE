@@ -1201,6 +1201,139 @@ router.get(
 );
 
 /**
+ * POST /proposal/:daoId/:proposalId/verify-tally-proof
+ *
+ * Universally verifiable tally proof check. Any observer can submit the
+ * aggregate tally proof plus the claimed yes/no totals and Merkle root for
+ * the nullifier set; the voting contract performs the SNARK verification
+ * on-chain. A false result means the claimed tally is not the one proven
+ * by the circuit for that root.
+ */
+router.post(
+  "/proposal/:daoId/:proposalId/verify-tally-proof",
+  bodyLimit("64kb"),
+  queryLimiter,
+  validateParams(proposalParamsSchema),
+  (async (req: Request, res: Response, next: NextFunction) => {
+    const { daoId, proposalId } = (req as any).validatedParams;
+    const { root, yesVotes, noVotes, proof } = req.body;
+
+    if (
+      root === undefined ||
+      yesVotes === undefined ||
+      noVotes === undefined ||
+      proof === undefined
+    ) {
+      return res.status(400).json({
+        error: "Missing required fields: root, yesVotes, noVotes, proof",
+      });
+    }
+
+    try {
+      let scRoot: StellarSdk.xdr.ScVal;
+      try {
+        scRoot = u256ToScVal(root);
+      } catch (err) {
+        return res
+          .status(400)
+          .json({ error: "Invalid merkle root: must be a 256-bit hex string" });
+      }
+
+      let scYesVotes: StellarSdk.xdr.ScVal;
+      let scNoVotes: StellarSdk.xdr.ScVal;
+      try {
+        scYesVotes = StellarSdk.nativeToScVal(BigInt(yesVotes), {
+          type: "u64",
+        });
+        scNoVotes = StellarSdk.nativeToScVal(BigInt(noVotes), {
+          type: "u64",
+        });
+      } catch (err) {
+        return res.status(400).json({
+          error: "Invalid vote count: yesVotes and noVotes must be u64 values",
+        });
+      }
+
+      let scProof: StellarSdk.xdr.ScVal;
+      try {
+        scProof = proofToScVal(proof);
+      } catch (err) {
+        return res.status(400).json({ error: "Invalid tally proof" });
+      }
+
+      const contract = new StellarSdk.Contract(config.votingContractId!);
+      const args = [
+        StellarSdk.nativeToScVal(daoId, { type: "u64" }),
+        StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
+        scRoot,
+        scYesVotes,
+        scNoVotes,
+        scProof,
+      ];
+
+      const operation = contract.call("verify_tally_proof", ...args);
+
+      const account = await (server as StellarSdk.rpc.Server).getAccount(
+        relayerKeypair.publicKey(),
+      );
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: "100000",
+        networkPassphrase: config.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+      const simResult = await (
+        server as StellarSdk.rpc.Server
+      ).simulateTransaction(tx);
+
+      if (!StellarSdk.rpc.Api.isSimulationSuccess(simResult)) {
+        return res.status(400).json({ valid: false });
+      }
+
+      const resultScVal = simResult.result?.retval;
+      if (!resultScVal) {
+        return res.status(500).json({ error: "No result returned" });
+      }
+
+      const valid = resultScVal.b() === true;
+
+      log("info", "tally_proof_verified", {
+        daoId,
+        proposalId,
+        valid,
+      });
+
+      res.json({
+        valid,
+        daoId,
+        proposalId,
+        root,
+        yesVotes,
+        noVotes,
+        proof,
+      });
+    } catch (err) {
+      if (err instanceof ApiError) return next(err);
+      log("error", "tally_proof_verify_error", {
+        daoId,
+        proposalId,
+        error: (err as Error).message,
+      });
+      return next(
+        new ApiError(
+          500,
+          ErrorCode.INTERNAL_ERROR,
+          "Failed to verify tally proof",
+          (err as Error).message,
+        ),
+      );
+    }
+  }) as AsyncHandler,
+);
+
+/**
  * GET /root/:daoId - Get current Merkle root for a DAO
  */
 router.get(

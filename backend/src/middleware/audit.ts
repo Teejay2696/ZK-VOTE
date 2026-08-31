@@ -182,6 +182,7 @@ export function deriveActor(req: Request): string {
 function inferAction(path: string, method: string): string {
   if (!path) return `${method}:unknown`;
   // Normalize path for action naming
+  if (path.includes("/tally") || path.includes("verify_tally_proof")) return "tally_verify";
   if (path.includes("/vote") || path === "/vote") return "vote";
   if (path.includes("/comment")) return "comment";
   if (path.includes("/bridge")) return "bridge";

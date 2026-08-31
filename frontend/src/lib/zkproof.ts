@@ -198,10 +198,60 @@ export interface ClaimProofInput {
 // Distinct arity (4 vs 3) ensures vote and claim nullifiers never collide.
 export const CLAIM_TAG = "427020085613";
 
+export interface TallyProofInput {
+  daoId: string;
+  proposalId: string;
+  root: string;
+  tallyYes: string;
+  tallyNo: string;
+  nullifiers: string[];
+  voteChoices: string[];
+  weights?: string[];
+  pathElements: string[][];
+  pathIndices: number[][];
+}
+
 export interface GeneratedProof {
   proof: Groth16Proof;
   publicSignals: string[];
   redundantProof?: Groth16Proof;
+}
+
+/**
+ * Generate a Snark proof for a final tally.
+ *
+ * The circuit proves that `tallyYes` and `tallyNo` are the correct sums of
+ * all valid votes that were cast for a proposal. The proof is verified
+ * on-chain by the `verify_tally_proof` entrypoint.
+ *
+ * @param input - All tally inputs (root, nullifiers, vote choices, weights,
+ *                merkle paths).
+ * @param wasmPath - Path to the compiled tally circuit WASM (or a Uint8Array
+ *                   containing the WASM bytes).
+ * @param zkeyPath - Path to the tally circuit final zkey (or a Uint8Array
+ *                   containing the zkey bytes).
+ * @returns The generated Groth16 proof and public signals.
+ */
+export async function generateTallyProof(
+  input: TallyProofInput,
+  wasmPath: string | Uint8Array,
+  zkeyPath: string | Uint8Array,
+): Promise<GeneratedProof> {
+  // Normalize input for the circuit.
+  const circuitInput = {
+    root: input.root,
+    daoId: input.daoId,
+    proposalId: input.proposalId,
+    tallyYes: input.tallyYes,
+    tallyNo: input.tallyNo,
+    nullifiers: input.nullifiers,
+    voteChoices: input.voteChoices,
+    weights: input.weights ?? input.voteChoices.map(() => "1"),
+    pathElements: input.pathElements,
+    pathIndices: input.pathIndices,
+  } as unknown as Record<string, unknown>;
+
+  return proveWithRust(circuitInput, wasmPath, zkeyPath);
 }
 
 // ============================================
@@ -652,6 +702,51 @@ export async function generateWeightedVoteProof(
     throw new Error(
       `Weighted proof failed: ${error instanceof Error ? error.message : "Unknown error"}`,
     );
+  }
+}
+
+/**
+ * Generate a Groth16 tally proof for a proposal.
+ * The circuit proves the reported tallies are the sum of valid, unique votes
+ * in the nullifier set (bound to `root`).
+ */
+export async function generateTallyProof(
+  input: TallyProofInput,
+  wasmPath: string | Uint8Array = "/circuits/tally/tally.wasm",
+  zkeyPath: string | Uint8Array = "/circuits/tally/tally_final.zkey",
+): Promise<GeneratedProof> {
+  try {
+    const circuitInput: Record<string, unknown> = {
+      daoId: input.daoId,
+      proposalId: input.proposalId,
+      root: input.root,
+      tallyYes: input.tallyYes,
+      tallyNo: input.tallyNo,
+      nullifiers: input.nullifiers,
+      voteChoices: input.voteChoices,
+      pathElements: input.pathElements,
+      pathIndices: input.pathIndices,
+    };
+    if (input.weights) circuitInput.voteWeights = input.weights;
+
+    if (USE_RUST_PROVER) {
+      try {
+        return await proveWithRust(circuitInput, wasmPath, zkeyPath);
+      } catch (e) {
+        console.warn("Rust tally prover failed; falling back to snarkjs.", e);
+      }
+    }
+
+    const { groth16 } = await import("snarkjs");
+    const { proof, publicSignals } = await groth16.fullProve(
+      circuitInput,
+      wasmPath,
+      zkeyPath,
+    );
+    return { proof, publicSignals };
+  } catch (error) {
+    console.error("Failed to generate tally proof:", error);
+    throw new Error(`Tally proof generation failed: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }
 

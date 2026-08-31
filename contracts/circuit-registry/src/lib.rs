@@ -1,10 +1,10 @@
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    BytesN, Env, String, Symbol, Vec,
+    Bytes, BytesN, Env, String, Symbol, Vec,
 };
 
-use zkvote_groth16::VerificationKey;
+use zkvote_groth16::{verify, VerificationKey};
 
 const VERSION: u32 = 1;
 const VERSION_KEY: Symbol = symbol_short!("ver");
@@ -44,6 +44,7 @@ pub enum RegistryError {
 pub enum CircuitType {
     Vote,
     Comment,
+    Tally,
 }
 
 #[contracttype]
@@ -278,6 +279,17 @@ impl CircuitRegistry {
             vk: circuit.vk,
             num_public_signals: circuit.num_public_signals,
         }
+    }
+
+    pub fn verify_tally_proof(
+        env: Env,
+        dao_id: u64,
+        proof: Bytes,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> bool {
+        let circuit_id = Self::get_dao_current_circuit(env.clone(), dao_id, CircuitType::Tally);
+        let vk_map = Self::get_vk(env.clone(), circuit_id, CircuitType::Tally);
+        verify(&env, &vk_map.vk, &proof, &public_inputs)
     }
 
     pub fn migrate_dao(

@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,16 +6,12 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 
-const tempDir = fs.mkdtempSync(
-  path.join(os.tmpdir(), "zkvote-vote-integration-"),
-);
-const dbPath = path.join(tempDir, "vote.db");
+let tempDir, dbPath;
 
-process.env.RELAYER_TEST_MODE = "true";
+process.env.RELAPER_TEST_MODE = "true";
 process.env.RELAYER_SECRET_KEY =
-  "SCVZXEUXJLRZKPCUXGXN53BJTD3RAZPRSSXHXDGSZQH5EOGEUTWINUXF";
-process.env.RELAYER_AUTH_TOKEN = "vote-integration-token";
-process.env.AUTH_MASTER_KEY = "vote-integration-auth-master-key";
+  "SCVZXEUXJLRZKPCUXGXN53BJTDRAZPRSSXHXDGSZQH5EODGEUTWINUXF";
+process.env.RELAYUR_AUTH_TOKEN = "vote-integration-token";
 process.env.VOTING_CONTRACT_ID = "C".padEnd(56, "A");
 process.env.TREE_CONTRACT_ID = "C".padEnd(56, "B");
 process.env.COMMENTS_CONTRACT_ID = "C".padEnd(56, "D");
@@ -23,49 +19,35 @@ process.env.SOROBAN_RPC_URL = "http://localhost";
 process.env.NETWORK_PASSPHRASE = "Test";
 process.env.CORS_ORIGIN = "http://localhost";
 
-const { default: votingRoutes, setVoteExecutorForTests } =
-  await import("../src/routes/voting.js");
-const { errorHandler } = await import("../src/middleware/errorHandler.js");
-const { initDb, closeDb, getTransactionLog, upsertDao } =
-  await import("../src/services/db.js");
+const { app } = await import("../src/index.ts");
+const { setVoteExecutorForTests, setTallyVerifierForTests } = await import(
+  "../src/routes/voting.js"
+);
+const {
+  initDb,
+  closeDb,
+  getTransactionLog,
+} = await import("../src/services/db.js");
 
-const app = express();
-app.use(express.json());
-app.use(votingRoutes);
-app.use(errorHandler);
-
-const validProof = (cLastByte = "03") => ({
-  a: "01".padStart(128, "0"),
-  b: "02".padStart(256, "0"),
-  c: cLastByte.padStart(128, "0"),
+before(() => {
+  tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "zkvote-vote-integration-"),
+  );
+  dbPath = path.join(tempDir, "vote.db");
+  initDb(dbPath);
 });
 
-const uniqueFieldHex = (suffix) =>
-  `${Date.now().toString(16)}${suffix}`.padStart(64, "0");
+after(() => {
+  closeDb();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
 
-test("POST /vote completes a successful vote flow", async (t) => {
-  initDb(dbPath);
+afterEach(() => {
+  setVoteExecutorForTests(null);
+  setTallyVerifierForTests(null);
+});
 
-  t.after(() => {
-    setVoteExecutorForTests(null);
-    closeDb();
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // Windows can keep SQLite handles briefly after close.
-    }
-  });
-
-  upsertDao({
-    id: 7,
-    name: "Test DAO",
-    creator: "G".padEnd(56, "A"),
-    membership_open: 1,
-    members_can_propose: 1,
-    metadata_cid: null,
-    member_count: 1,
-  });
-
+test("POST /vote completes a successful vote flow", async () => {
   let capturedInput;
 
   setVoteExecutorForTests(async (input) => {
@@ -93,8 +75,11 @@ test("POST /vote completes a successful vote flow", async (t) => {
       choice: true,
       nullifier,
       root,
-      proof: validProof(),
-      redundantProof: validProof(),
+      proof: {
+        a:"11".repeat(64),
+        b:"22".repeat(128),
+        c:"33".repeat(64),
+      },
     });
 
   assert.equal(response.statusCode, 200);
@@ -165,4 +150,57 @@ test("POST /vote rejects mismatched redundant proof before submission", async (t
   assert.equal(response.body.error.code, "VOTE_REJECTED");
   assert.equal(response.body.error.message, "VOTE_REJECTED");
   assert.equal(executorCalled, false);
+});
+
+test("POST /verify-tally verifies a valid tally proof", async () => {
+  let capturedTallyInput;
+  setTallyVerifierForTests(async (input) => {
+    capturedTallyInput = input;
+    return true;
+  });
+
+  const proof = {
+    a: "11".repeat(64),
+    b: "22".repeat(128),
+    c: "ff".repeat(64),
+  };
+
+  const response = await request(app)
+    .post("/verify-tally")
+    .set("Authorization", "Bearer vote-integration-token")
+    .send({
+      daoId: 7,
+      proposalId: 11,
+      proof,
+    });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { valid: true });
+  assert.deepEqual(capturedTallyInput, {
+    daoId: 7,
+    proposalId: 11,
+    proof,
+  });
+});
+
+test("POST /verify-tally rejects an invalid tally proof", async () => {
+  setTallyVerifierForTests(async () => false);
+
+  const proof = {
+    a:"11".repeat(64),
+    b:"22".repeat(128),
+    c:"00".repeat(64),
+  };
+
+  const response = await request(app)
+    .post("/verify-tally")
+    .set("Authorization", "Bearer vote-integration-token")
+    .send({
+      daoId: 7,
+      proposalId: 11,
+      proof,
+    });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { valid: false });
 });
