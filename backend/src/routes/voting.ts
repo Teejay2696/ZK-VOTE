@@ -53,6 +53,7 @@ import {
   getVoteSubmission,
   insertVoteSubmission,
   updateVoteSubmission,
+  cleanupExpiredVoteSubmissions,
   storeVoteReceipt,
   getVoteReceipt,
 } from "../services/db.js";
@@ -312,6 +313,8 @@ router.post(
       voterSignature,
     } = body;
 
+    const idempotencyKey = req.header("Idempotency-Key") || nullifier;
+
     try {
       log("info", "vote_request", { daoId, proposalId });
 
@@ -433,12 +436,19 @@ router.post(
         }
       }
 
-      // Idempotency: check vote_submissions table keyed on nullifier_hash
-      if (nullifier) {
-        const existing = getVoteSubmission(nullifier);
+      // Clean up stale submissions (e.g., older than 2 minutes)
+      try {
+        cleanupExpiredVoteSubmissions(120000);
+      } catch (err) {
+        log("warn", "cleanup_expired_vote_submissions_failed", { error: (err as Error).message });
+      }
+
+      // Idempotency: check vote_submissions table keyed on idempotencyKey
+      if (idempotencyKey) {
+        const existing = getVoteSubmission(idempotencyKey);
         if (existing) {
           log("info", "vote_idempotent_hit", {
-            nullifier,
+            idempotencyKey,
             txHash: existing.tx_hash,
             status: existing.status,
           });
@@ -466,11 +476,11 @@ router.post(
             status: "PENDING",
           });
         }
-        // Claim the nullifier slot before doing any on-chain work.
+        // Claim the idempotencyKey slot before doing any on-chain work.
         // If two concurrent requests race here, INSERT OR IGNORE means only
         // one proceeds; the other re-reads above and gets the 202 path.
-        if (!insertVoteSubmission(nullifier)) {
-          const concurrent = getVoteSubmission(nullifier);
+        if (!insertVoteSubmission(idempotencyKey)) {
+          const concurrent = getVoteSubmission(idempotencyKey);
           if (concurrent) {
             res.setHeader("Retry-After", "5");
             return res.status(202).json({
@@ -597,7 +607,9 @@ router.post(
           );
           if (nullifier) {
             updateTransactionLogStatus(nullifier, "FAILED");
-            updateVoteSubmission(nullifier, "failed");
+          }
+          if (idempotencyKey) {
+            updateVoteSubmission(idempotencyKey, "failed");
           }
           relayErrors.inc({ error_type: isBadSeq ? "sequence_lock" : "submission" });
           log("error", "submit_failed", {
@@ -626,7 +638,9 @@ router.post(
       if (result.status === "SUCCESS") {
         if (nullifier && sendResult.hash) {
           updateTransactionLogStatus(nullifier, "SUCCESS", sendResult.hash);
-          updateVoteSubmission(nullifier, "confirmed", sendResult.hash);
+        }
+        if (idempotencyKey && sendResult.hash) {
+          updateVoteSubmission(idempotencyKey, "confirmed", sendResult.hash);
         }
         const relayDurationSec =
           Number(process.hrtime.bigint() - relayStart) / 1e9;
@@ -655,7 +669,9 @@ router.post(
       } else {
         if (nullifier && sendResult.hash) {
           updateTransactionLogStatus(nullifier, "FAILED", sendResult.hash);
-          updateVoteSubmission(nullifier, "failed", sendResult.hash);
+        }
+        if (idempotencyKey && sendResult.hash) {
+          updateVoteSubmission(idempotencyKey, "failed", sendResult.hash);
         }
         const relayDurationSec =
           Number(process.hrtime.bigint() - relayStart) / 1e9;
@@ -676,7 +692,9 @@ router.post(
     } catch (err) {
       if (nullifier) {
         updateTransactionLogStatus(nullifier, "FAILED");
-        updateVoteSubmission(nullifier, "failed");
+      }
+      if (idempotencyKey) {
+        updateVoteSubmission(idempotencyKey, "failed");
       }
       votesProcessed.inc({ status: "error" });
       log("error", "vote_exception", {
