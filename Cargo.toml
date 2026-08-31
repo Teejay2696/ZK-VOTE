@@ -10,6 +10,11 @@ members = [
     "contracts/bridge/soroban",
     "contracts/circuit-registry",
     "tests/integration",
+    "contracts/poc-bls12-381",
+    "contracts/token",
+    "contracts/vdf",
+    "contracts/threshold-crypto",
+    "contracts/rewards"
 ]
 default-members = [
     "contracts/zkvote-groth16",

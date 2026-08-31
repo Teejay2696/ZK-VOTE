@@ -2307,6 +2307,14 @@ export interface components {
       lastSync: string | null;
       cached: boolean;
     };
+    PublicSignals: {
+      root: string;
+      nullifier: string;
+      daoId: string;
+      proposalId: string;
+      voteChoice: string;
+      numCandidates: string;
+    };
   };
   responses: never;
   parameters: never;
