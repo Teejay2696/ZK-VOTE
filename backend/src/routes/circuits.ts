@@ -81,7 +81,11 @@ router.get("/circuits/vk/:circuitId/:version", queryLimiter, (async (
     const currentVersion = await getCurrentVersion(circuitId);
     // Mismatch detection: stale version rejected with 410 Gone
     if (currentVersion !== null && isStaleVersion(ver, currentVersion)) {
-      log("warn", "stale_vk_rejected", { circuitId, requested: ver, current: currentVersion });
+      log("warn", "stale_vk_rejected", {
+        circuitId,
+        requested: ver,
+        current: currentVersion,
+      });
       return res.status(410).json({
         error: "Stale VK version",
         circuitId,
@@ -118,12 +122,20 @@ router.get("/circuits/vk/:circuitId/:version", queryLimiter, (async (
         ic: ["0".repeat(128)],
       },
       hash: `local_vk_hash_${circuitId}_v${ver}`,
-      numPublicSignals: circuitId.includes("weighted") ? 3 : circuitId.includes("v2") ? 6 : 5,
+      numPublicSignals: circuitId.includes("weighted")
+        ? 3
+        : circuitId.includes("v2")
+          ? 6
+          : 5,
       currentVersion: currentVersion ?? ver,
       isStale: false,
     });
   } catch (error) {
-    log("error", "vk_fetch_error", { circuitId, version: ver, error: (error as Error).message });
+    log("error", "vk_fetch_error", {
+      circuitId,
+      version: ver,
+      error: (error as Error).message,
+    });
     return res.status(500).json({ error: "Failed to fetch VK" });
   }
 }) as AsyncHandler);
@@ -147,7 +159,10 @@ router.get("/circuits/vk/:circuitId", queryLimiter, (async (
       currentVersion: version,
     });
   } catch (error) {
-    log("error", "vk_latest_error", { circuitId, error: (error as Error).message });
+    log("error", "vk_latest_error", {
+      circuitId,
+      error: (error as Error).message,
+    });
     return res.status(500).json({ error: "Failed to fetch latest VK" });
   }
 }) as AsyncHandler);
@@ -158,12 +173,21 @@ router.post("/circuits/verify-version", queryLimiter, (async (
   res: Response,
 ) => {
   const { circuitId, proposalVersion, clientVersion } = req.body ?? {};
-  if (typeof circuitId !== "string" || typeof proposalVersion !== "number" || typeof clientVersion !== "number") {
-    return res.status(400).json({ error: "circuitId, proposalVersion, clientVersion required" });
+  if (
+    typeof circuitId !== "string" ||
+    typeof proposalVersion !== "number" ||
+    typeof clientVersion !== "number"
+  ) {
+    return res
+      .status(400)
+      .json({ error: "circuitId, proposalVersion, clientVersion required" });
   }
   const mismatch = proposalVersion !== clientVersion;
   const currentVersion = await getCurrentVersion(circuitId);
-  const stale = currentVersion !== null ? isStaleVersion(clientVersion, currentVersion) : false;
+  const stale =
+    currentVersion !== null
+      ? isStaleVersion(clientVersion, currentVersion)
+      : false;
   return res.json({
     circuitId,
     proposalVersion,
