@@ -148,7 +148,7 @@ export interface AuditEntry {
   immutable: true; // flag to indicate append-only
 }
 
-let auditLog: AuditEntry[] = [];
+let auditLogStore: AuditEntry[] = [];
 let auditCounter = 0;
 const MAX_AUDIT_LOG_SIZE = 10000;
 
@@ -212,10 +212,10 @@ export function appendAudit(entry: Omit<AuditEntry, "id" | "timestamp" | "immuta
   };
 
   // Enforce append-only: push only, never splice outside this module
-  auditLog.push(full);
+  auditLogStore.push(full);
   // Evict oldest if over capacity (still append-only, just bounding memory)
-  if (auditLog.length > MAX_AUDIT_LOG_SIZE) {
-    auditLog.shift();
+  if (auditLogStore.length > MAX_AUDIT_LOG_SIZE) {
+    auditLogStore.shift();
   }
 
   // Also log to structured logger (redacted)
@@ -239,7 +239,7 @@ export interface AuditQuery {
 }
 
 export function queryAuditLogs(q: AuditQuery): { entries: AuditEntry[]; total: number } {
-  let filtered = auditLog;
+  let filtered = auditLogStore;
 
   if (q.action) {
     filtered = filtered.filter((e) => e.action === q.action || e.action.includes(q.action!));
@@ -272,27 +272,27 @@ export function queryAuditLogs(q: AuditQuery): { entries: AuditEntry[]; total: n
 
 export function getAllAuditLogs(): AuditEntry[] {
   // Return shallow copy to prevent external mutation; entries themselves are immutable by convention
-  return [...auditLog];
+  return [...auditLogStore];
 }
 
 export function exportAuditLogs(format: "json" | "csv" = "json"): string {
   if (format === "csv") {
     const header = "id,timestamp,requestId,method,path,action,actor,statusCode,durationMs";
-    const rows = auditLog.map((e) =>
+    const rows = auditLogStore.map((e: AuditEntry) =>
       [e.id, e.timestamp, e.requestId, e.method, e.path, e.action, e.actor, e.statusCode ?? "", e.durationMs ?? ""]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`)
         .join(",")
     );
     return [header, ...rows].join("\n");
   }
-  return JSON.stringify(auditLog, null, 2);
+  return JSON.stringify(auditLogStore, null, 2);
 }
 
 /**
  * Clear audit log - ONLY for tests. Not exposed via API.
  */
 export function clearAuditLog(): void {
-  auditLog = [];
+  auditLogStore = [];
   auditCounter = 0;
   idempotencyKeys.clear();
 }
@@ -389,4 +389,11 @@ export function auditAction(
     statusCode: extra?.statusCode,
     userAgent: (req.headers["user-agent"] as string) || undefined,
   });
+}
+
+export function auditLog(action: string) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    auditAction(req, action);
+    next();
+  };
 }

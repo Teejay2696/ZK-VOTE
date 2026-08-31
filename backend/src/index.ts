@@ -10,14 +10,9 @@ import cluster from "node:cluster";
 import express, { type Express } from "express";
 import cors from "cors";
 import helmet from "helmet";
-import swaggerUi from "swagger-ui-express";
 
-import { buildOpenApiDocument } from "./openapi.js";
-
-// Configuration and types
 import { config, validateEnv, isValidContractId } from "./config.js";
 
-// Cluster Service
 import {
   startClusterMaster,
   initWorkerIpc,
@@ -26,7 +21,6 @@ import {
   registerWorkerShutdownHandler,
 } from "./services/cluster.js";
 
-// Services
 import { log, logger } from "./services/logger.js";
 import * as ipfsService from "./services/ipfs.js";
 import { initPinManager } from "./services/ipfs-pin-manager.js";
@@ -71,12 +65,16 @@ import {
   startMemoryMonitor,
   stopMemoryMonitor,
 } from "./services/memory-monitor.js";
-import { closeDb } from "./services/db.js";
 
-// Middleware
-import { csrfGuard, requestLogger, errorHandler, auditMiddleware } from "./middleware/index.js";
+import {
+  csrfGuard,
+  requestLogger,
+  errorHandler,
+  auditMiddleware,
+  metricsMiddleware,
+  degradationContext,
+} from "./middleware/index.js";
 
-// Routes
 import {
   healthRoutes,
   initHealthRoutes,
@@ -89,8 +87,9 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
+  metricsRoutes,
+  remediationRoutes,
 } from "./routes/index.js";
-import openApiSpec from "./openapi.js";
 
 // ============================================
 // ENVIRONMENT VALIDATION
@@ -298,45 +297,7 @@ async function gracefulShutdown(reason: string): Promise<void> {
 
   await httpClosed;
 
-    // Keep the startup banner on stdout for human-readable output
-    console.log(`\nZKVote Relayer running on http://localhost:${PORT}`);
-
-    logger.info("endpoints_registered", {
-      core: [
-        "/health",
-        "/ready",
-        "/config",
-        "/vote",
-        "/proposal/:dao/:prop",
-        "/root/:dao",
-        "/events/:daoId",
-        "/events/notify",
-        "/indexer/status",
-      ],
-      comments: [
-        "/comment/anonymous",
-        "/comments/:dao/:prop",
-        "/comments/:dao/:prop/nonce",
-        "/comment/:dao/:prop/:id",
-        "/comment/edit",
-        "/comment/delete",
-      ],
-      bridge: [
-        "/bridge/vote",
-        "/bridge/nullifier/:daoId/:proposalId/:nullifier",
-        "/bridge/relay",
-      ],
-      ipfs: config.ipfsEnabled
-        ? [
-            "/ipfs/image",
-            "/ipfs/metadata",
-            "/ipfs/:cid",
-            "/ipfs/image/:cid",
-            "/ipfs/health",
-          ]
-        : [],
-    });
-  }
+  const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
 
   clearTimeout(forceExitTimer);
   log("info", "shutdown_complete", {
@@ -579,7 +540,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     registerWorkerShutdownHandler((reason) => {
       void gracefulShutdown(reason);
     });
-    registerShutdownHandler(gracefulShutdown);
 
     process.on("SIGTERM", () => {
       void gracefulShutdown("SIGTERM");

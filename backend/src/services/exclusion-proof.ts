@@ -6,9 +6,16 @@
  * to check revocation status.
  */
 
-import { Proof } from "./proof-system.js";
 import { getDb } from "./db.js";
 import { log } from "./logger.js";
+
+export interface Proof {
+  pi_a: string[];
+  pi_b: string[][];
+  pi_c: string[];
+  protocol?: string;
+  curve?: string;
+}
 
 export interface ExclusionProof extends Proof {
   publicInputs: {
@@ -129,9 +136,9 @@ async function checkRevocationStatus(
   daoId: number,
   _treeContractId: string,
 ): Promise<RevocationStatus> {
-  const db = getDb();
+  const db = getDb() as any;
 
-  const revocationRecord = db
+  const revocationRecord = await db
     .selectFrom("member_revocations")
     .where("commitment", "==", commitment)
     .where("dao_id", "==", daoId)
@@ -176,9 +183,9 @@ export async function recordRevocation(
   daoId: number,
   timestamp: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = getDb() as any;
 
-  db.insertInto("member_revocations")
+  await db.insertInto("member_revocations")
     .values({
       commitment,
       dao_id: daoId,
@@ -186,10 +193,10 @@ export async function recordRevocation(
       created_at: new Date().toISOString(),
     })
     .executeTakeFirst()
-    .catch((err) => {
+    .catch((err: Error) => {
       log("error", "revocation_record_failed", {
         commitment: commitment.slice(0, 10),
-        error: (err as Error).message,
+        error: err.message,
       });
     });
 }
@@ -202,17 +209,17 @@ export async function recordReinstatement(
   daoId: number,
   timestamp: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = getDb() as any;
 
-  db.updateTable("member_revocations")
+  await db.updateTable("member_revocations")
     .set({ reinstated_at: timestamp })
     .where("commitment", "==", commitment)
     .where("dao_id", "==", daoId)
     .executeTakeFirst()
-    .catch((err) => {
+    .catch((err: Error) => {
       log("error", "reinstatement_record_failed", {
         commitment: commitment.slice(0, 10),
-        error: (err as Error).message,
+        error: err.message,
       });
     });
 }

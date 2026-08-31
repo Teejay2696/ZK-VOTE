@@ -31,6 +31,49 @@ pub enum Groth16Error {
     /// ZKV1 serialized proof has an unknown version byte, unknown curve id,
     /// or does not match the expected total byte length.
     InvalidProofFormat = 33,
+
+    /// ── Coarse error codes (100–106) ──────────────────────────────────
+    /// Production anonymous paths collapse fine-grained variants into one
+    /// of these stable categories. Admin / test contexts continue to use
+    /// the original variants above so that tooling retains debugging
+    /// fidelity.  Numeric codes are intentionally placed above the
+    /// existing fine-grained range to avoid collisions with deployed
+    /// contract discriminants.
+    InvalidInput = 100,
+    EligibilityFailed = 101,
+    ProofInvalid = 102,
+    AlreadySubmitted = 103,
+    WindowClosed = 104,
+    InsufficientFunds = 105,
+    ConfigError = 106,
+}
+
+/// Whether the caller is an authorized admin/configuration path (retains
+/// fine-grained errors) or an anonymous user submission path (must use
+/// coarse collapsed codes so a relayer cannot probe internal state).
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum PathContext {
+    Admin,
+    Anonymous,
+}
+
+impl Groth16Error {
+    /// Collapse fine-grained `Groth16Error` discriminants into the coarse
+    /// set (codes 100–106) when the caller is an anonymous-submission
+    /// path.  Returns the error unchanged on [`PathContext::Admin`] so
+    /// admin tooling and unit tests retain full diagnostic fidelity.
+    pub fn to_coarse(&self, ctx: PathContext) -> Groth16Error {
+        match ctx {
+            PathContext::Admin => *self,
+            PathContext::Anonymous => match self {
+                Groth16Error::SignalNotInField
+                | Groth16Error::InvalidNullifier => Groth16Error::InvalidInput,
+                Groth16Error::IcLengthMismatch
+                | Groth16Error::InvalidProofFormat => Groth16Error::ProofInvalid,
+                other => *other,
+            },
+        }
+    }
 }
 
 #[contracttype]
@@ -501,6 +544,59 @@ mod tests {
         assert_eq!(
             validate_nullifier_bls381(&env, &modulus),
             Err(Groth16Error::SignalNotInField)
+        );
+    }
+
+    // ── Coarse error code mapping tests ─────────────────────────────────
+
+    #[test]
+    fn coarse_admin_preserves_specific_codes() {
+        let cases = [
+            Groth16Error::IcLengthMismatch,
+            Groth16Error::SignalNotInField,
+            Groth16Error::InvalidNullifier,
+            Groth16Error::InvalidProofFormat,
+            Groth16Error::ProofInvalid,
+            Groth16Error::InvalidInput,
+        ];
+        for c in &cases {
+            assert_eq!(c.to_coarse(PathContext::Admin), *c);
+        }
+    }
+
+    #[test]
+    fn coarse_anon_collapses_input_errors() {
+        assert_eq!(
+            Groth16Error::SignalNotInField.to_coarse(PathContext::Anonymous),
+            Groth16Error::InvalidInput
+        );
+        assert_eq!(
+            Groth16Error::InvalidNullifier.to_coarse(PathContext::Anonymous),
+            Groth16Error::InvalidInput
+        );
+    }
+
+    #[test]
+    fn coarse_anon_collapses_proof_errors() {
+        assert_eq!(
+            Groth16Error::IcLengthMismatch.to_coarse(PathContext::Anonymous),
+            Groth16Error::ProofInvalid
+        );
+        assert_eq!(
+            Groth16Error::InvalidProofFormat.to_coarse(PathContext::Anonymous),
+            Groth16Error::ProofInvalid
+        );
+    }
+
+    #[test]
+    fn coarse_anon_passthroughs() {
+        assert_eq!(
+            Groth16Error::ProofInvalid.to_coarse(PathContext::Anonymous),
+            Groth16Error::ProofInvalid
+        );
+        assert_eq!(
+            Groth16Error::InvalidInput.to_coarse(PathContext::Anonymous),
+            Groth16Error::InvalidInput
         );
     }
 
