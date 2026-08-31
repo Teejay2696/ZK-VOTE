@@ -604,9 +604,10 @@ export function validateEnv(): void {
     );
   }
 
+  const missing = errors.filter(e => e.includes("is required")).map(e => e.split(" ")[0]);
   const criticalKeys = ["VOTING_CONTRACT_ID", "TREE_CONTRACT_ID", "RELAYER_SECRET_KEY", "RELAYER_AUTH_TOKEN"];
-  const criticalMissing = missing.filter((k) => criticalKeys.includes(k));
-  const nonCriticalMissing = missing.filter((k) => !criticalKeys.includes(k));
+  const criticalMissing = missing.filter((k: string) => criticalKeys.includes(k));
+  const nonCriticalMissing = missing.filter((k: string) => !criticalKeys.includes(k));
 
   if (criticalMissing.length > 0) {
     console.error(
@@ -682,8 +683,8 @@ export function validateEnv(): void {
       JSON.stringify({
         level: "error",
         event: "invalid_contract_id",
-        var: "REWARDS_CONTRACT_ID",
-        value: config.rewardsContractId,
+        var: "COMMENTS_CONTRACT_ID",
+        value: config.commentsContractId,
       }),
     );
     process.exit(1);

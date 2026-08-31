@@ -89,6 +89,7 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
+  eventsRoutes,
 } from "./routes/index.js";
 import openApiSpec from "./openapi.js";
 
@@ -230,6 +231,7 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
+app.use(eventsRoutes);
 
 // Global error handler (must be last)
 app.use(errorHandler);
