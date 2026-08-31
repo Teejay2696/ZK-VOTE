@@ -23,7 +23,9 @@ export function getOfflineQueue(): QueuedAction[] {
   }
 }
 
-export function enqueueOfflineAction(action: Omit<QueuedAction, "id" | "timestamp" | "retries">): QueuedAction {
+export function enqueueOfflineAction(
+  action: Omit<QueuedAction, "id" | "timestamp" | "retries">,
+): QueuedAction {
   const queue = getOfflineQueue();
   const entry: QueuedAction = {
     ...action,
@@ -65,7 +67,10 @@ export function updateQueueRetries(id: string): void {
   }
 }
 
-export async function processOfflineQueue(): Promise<{ processed: number; failed: number }> {
+export async function processOfflineQueue(): Promise<{
+  processed: number;
+  failed: number;
+}> {
   const queue = getOfflineQueue();
   let processed = 0;
   let failed = 0;
@@ -104,7 +109,11 @@ if (typeof window !== "undefined") {
     processOfflineQueue().catch(() => {});
   });
   setInterval(() => {
-    if (typeof navigator !== "undefined" && navigator.onLine && getOfflineQueue().length > 0) {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.onLine &&
+      getOfflineQueue().length > 0
+    ) {
       processOfflineQueue().catch(() => {});
     }
   }, 30_000);

@@ -77,7 +77,9 @@ export function getCache(): CircuitRegistryCache {
   return cache;
 }
 
-export async function getCurrentVersion(circuitId: string): Promise<number | null> {
+export async function getCurrentVersion(
+  circuitId: string,
+): Promise<number | null> {
   const cached = versionCache.get(circuitId);
   if (cached && Date.now() - cached.fetchedAt < VERSION_TTL_MS) {
     return cached.version;
@@ -101,7 +103,10 @@ export function isStaleVersion(requested: number, current: number): boolean {
   return requested < current;
 }
 
-export function detectVKMismatch(proposalVersion: number, clientVersion: number): boolean {
+export function detectVKMismatch(
+  proposalVersion: number,
+  clientVersion: number,
+): boolean {
   return proposalVersion !== clientVersion;
 }
 
