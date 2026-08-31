@@ -69,6 +69,7 @@ import {
   stopMemoryMonitor,
 } from "./services/memory-monitor.js";
 import { closeDb } from "./services/db.js";
+import { ServiceSupervisor } from "./services/supervisor.js";
 
 // Middleware
 import {
@@ -280,6 +281,9 @@ let backgroundServicesStarted = false;
 let httpServer: ReturnType<Express["listen"]> | null = null;
 let shuttingDown = false;
 
+// Supervisor for background services with crash recovery (#176)
+const supervisor = new ServiceSupervisor();
+
 /**
  * Drain in-flight work and exit cleanly (zero-downtime deploys, see #190).
  * A vote submission holds a sequence lock across build+simulate+send+confirm,
@@ -326,7 +330,8 @@ async function gracefulShutdown(reason: string): Promise<void> {
     });
   });
 
-  await stopBackgroundServices();
+  await supervisor.stopAll();
+  stopBackgroundServices();
   stopAuthScheduler();
   stopWalResilience();
   log("info", "shutdown_component_stopped", {
@@ -361,6 +366,9 @@ async function startBackgroundServices(): Promise<void> {
     pid: process.pid,
     isLeader: isLeaderWorker(),
   });
+
+  // Register background services with supervisor for crash recovery (#176)
+  registerSupervisorServices();
 
   // Initialize Pinata and IPFS redundancy layer
   if (config.ipfsEnabled && config.pinataJwt) {
@@ -492,7 +500,11 @@ async function stopBackgroundServices(): Promise<void> {
 
   log("info", "stopping_background_services", { pid: process.pid });
 
-  await stopIndexer();
+  // Stop supervised services first
+  void supervisor.stopAll();
+
+  // Legacy stop calls (kept for services not yet fully migrated to supervisor)
+  stopIndexer();
   stopDaoSync();
   stopMembershipSync();
   stopTTLRenewal();
@@ -500,6 +512,87 @@ async function stopBackgroundServices(): Promise<void> {
   stopPinMonitor();
   stopMemoryMonitor();
   stopScheduledBackups();
+}
+
+/**
+ * Register background services with the supervisor for crash recovery (#176).
+ * The supervisor wraps each service with automatic restart on failure,
+ * exponential backoff, and dependency-aware shutdown ordering.
+ */
+function registerSupervisorServices(): void {
+  // TTL Renewal - most critical (contract storage expiry risk)
+  supervisor.register({
+    name: "ttl_renewal",
+    start: () => startTTLRenewal(),
+    stop: () => stopTTLRenewal(),
+  });
+
+  // SBT Transfer Watch
+  supervisor.register({
+    name: "sbt_transfer_watch",
+    start: () => startSbtTransferWatch(),
+    stop: () => stopSbtTransferWatch(),
+  });
+
+  // Indexer - critical for frontend data freshness
+  supervisor.register({
+    name: "indexer",
+    start: async () => {
+      if (!config.indexerEnabled) return;
+      const contractIds = [config.votingContractId!, config.treeContractId!];
+      if (
+        config.daoRegistryContractId &&
+        isValidContractId(config.daoRegistryContractId)
+      ) {
+        contractIds.push(config.daoRegistryContractId);
+      }
+      if (
+        config.membershipSbtContractId &&
+        isValidContractId(config.membershipSbtContractId)
+      ) {
+        contractIds.push(config.membershipSbtContractId);
+      }
+      await startIndexer(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        server as any,
+        contractIds,
+        config.indexerPollIntervalMs,
+      );
+    },
+    stop: () => stopIndexer(),
+  });
+
+  // DAO Sync
+  supervisor.register({
+    name: "dao_sync",
+    start: () => {
+      if (
+        config.daoRegistryContractId &&
+        isValidContractId(config.daoRegistryContractId)
+      ) {
+        startDaoSync();
+      }
+    },
+    stop: () => stopDaoSync(),
+  });
+
+  // Membership Sync - depends on DAO Sync being active
+  supervisor.register({
+    name: "membership_sync",
+    start: () => {
+      if (
+        config.membershipSbtContractId &&
+        isValidContractId(config.membershipSbtContractId)
+      ) {
+        startMembershipSync();
+      }
+    },
+    stop: () => stopMembershipSync(),
+    dependencies: ["dao_sync"],
+  });
+
+  // Fire-and-forget: startAll resolves failures internally
+  void supervisor.startAll();
 }
 
 // ============================================
