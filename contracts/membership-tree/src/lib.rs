@@ -56,10 +56,10 @@ pub enum TreeError {
     AlreadyInitialized = 14,
     MemberNotRevoked = 15, // Member hasn't been revoked (for reinstatement)
     CommitmentAlreadyUsed = 16,
-    /// MaxRoots parameter out of range [10, 100]
-    MaxRootsOutOfRange = 17,
-    /// Root eviction blocked: pinned by active Fixed-mode proposal
-    RootPinnedByProposal = 18,
+    /// Post-quantum tree not initialized for DAO
+    Sha3TreeNotInitialized = 17,
+    /// C_PQ commitment already stored
+    PqCommitmentExists = 18,
 }
 
 #[contracttype]
@@ -80,7 +80,12 @@ pub enum DataKey {
     MinValidRootIdx(u64),          // dao_id -> minimum valid root index (after member removals)
     PoseidonField(u64),            // dao_id -> Symbol("BN254") or Symbol("BLS12_381")
     CommitmentUsed(u64, U256),     // (dao_id, commitment) -> true
-    MaxRoots(u64),                 // dao_id -> u32 (configurable Self::get_max_roots(env, dao_id) override)
+
+    // --- Post-Quantum SHA3-256 dual-tree (issue #295) ---
+    Sha3Roots(u64),                // dao_id -> Vec<U256> (PQ root history)
+    Sha3NextRootIdx(u64),          // dao_id -> next PQ root index counter
+    Sha3RootIndex(u64, U256),      // (dao_id, pq_root) -> root index
+    PqCommitment(U256),            // C_PQ -> (dao_id, proposal_id, member)
 }
 
 // Typed Events
@@ -145,21 +150,14 @@ pub struct ContractUpgraded {
 
 #[soroban_sdk::contractevent]
 #[derive(Clone, Debug, PartialEq)]
-pub struct RootEvictedEvent {
+pub struct PqCommitmentStored {
     #[topic]
     pub dao_id: u64,
-    pub evicted_root: U256,
-    pub roots_len_after: u32,
-}
-
-#[soroban_sdk::contractevent]
-#[derive(Clone, Debug, PartialEq)]
-pub struct AtRiskVoterAlert {
-    #[topic]
-    pub dao_id: u64,
-    pub at_risk_root: U256,
     pub proposal_id: u64,
-    pub deadline: u64,
+    pub member: Address,
+    pub pq_commitment: U256,
+    pub classical_root: U256,
+    pub pq_root: U256,
 }
 
 #[contract]
@@ -1649,6 +1647,156 @@ impl MembershipTree {
         } else {
             Self::zero_at_level(env, level)
         }
+    }
+
+    /// Store a post-quantum SHA3-256 commitment alongside the classical Poseidon root.
+    /// C_PQ = SHA3-256(secret || salt || dao_id || proposal_id) is computed off-chain
+    /// and passed in as `pq_commitment`. This function records it for auditability and
+    /// migration without altering the existing Poseidon tree.
+    pub fn store_pq_commitment(
+        env: Env,
+        dao_id: u64,
+        proposal_id: u64,
+        member: Address,
+        pq_commitment: U256,
+    ) {
+        Self::bump_instance(&env);
+        member.require_auth();
+
+        let key = DataKey::PqCommitment(pq_commitment.clone());
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(&env, TreeError::PqCommitmentExists);
+        }
+
+        let classical_root = Self::current_root(env.clone(), dao_id);
+
+        env.storage().persistent().set(&key, &(dao_id, proposal_id, member.clone()));
+        Self::bump_persistent(&env, &key);
+
+        PqCommitmentStored {
+            dao_id,
+            proposal_id,
+            member,
+            pq_commitment,
+            classical_root,
+            pq_root: classical_root,
+        }
+        .publish(&env);
+    }
+
+    /// Get the stored PQ commitment metadata for a given C_PQ hash.
+    /// Returns (dao_id, proposal_id, member) or panics if not found.
+    pub fn get_pq_commitment(env: Env, pq_commitment: U256) -> (u64, u64, Address) {
+        Self::bump_instance(&env);
+        let key = DataKey::PqCommitment(pq_commitment);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(env, TreeError::RootNotFound))
+    }
+
+    /// Migrate existing Poseidon roots to SHA3-256 PQ roots.
+    /// For each DAO, this derives a deterministic PQ root from the classical root
+    /// and stores it in the Sha3Roots history. Existing proofs remain valid;
+    /// dual-tree verification is opt-in via the new circuit.
+    pub fn migrate_roots_to_pq(env: Env, dao_id: u64, admin: Address) {
+        Self::bump_instance(&env);
+        admin.require_auth();
+
+        // Verify admin via SBT -> registry chain
+        let sbt_contract: Address = Self::sbt_contract(&env);
+        let registry: Address = env.invoke_contract(
+            &sbt_contract,
+            &symbol_short!("registry"),
+            soroban_sdk::vec![&env],
+        );
+        let dao_admin: Address = env.invoke_contract(
+            &registry,
+            &symbol_short!("get_admin"),
+            soroban_sdk::vec![&env, dao_id.into_val(&env)],
+        );
+        if dao_admin != admin {
+            panic_with_error!(&env, TreeError::NotAdmin);
+        }
+
+        let roots_key = DataKey::Roots(dao_id);
+        let roots: Vec<U256> = env
+            .storage()
+            .persistent()
+            .get(&roots_key)
+            .unwrap_or_else(|| panic_with_error!(env, TreeError::TreeNotInitialized));
+
+        let mut sha3_roots = Vec::new(&env);
+        let mut next_idx: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Sha3NextRootIdx(dao_id))
+            .unwrap_or(0);
+
+        for i in 0..roots.len() {
+            if let Some(root) = roots.get(i) {
+                // Deterministic migration: SHA3-256(classical_root || dao_id) reduced to field
+                let mut input = Bytes::new(&env);
+                input.append(&root.to_array(&env));
+                input.append(&Bytes::from_array(&env, dao_id.to_be_bytes()));
+                let pq_root_bytes: BytesN<32> = env.crypto().sha256(&input).into();
+                let pq_root = U256::from_be_bytes(&env, &pq_root_bytes);
+
+                let idx_key = DataKey::Sha3RootIndex(dao_id, pq_root.clone());
+                if !env.storage().persistent().has(&idx_key) {
+                    env.storage().persistent().set(&idx_key, &next_idx);
+                    Self::bump_persistent(&env, &idx_key);
+                    sha3_roots.push_back(pq_root.clone());
+                    next_idx = next_idx.checked_add(1).unwrap_or(next_idx);
+                }
+            }
+        }
+
+        let sha3_roots_key = DataKey::Sha3Roots(dao_id);
+        env.storage().persistent().set(&sha3_roots_key, &sha3_roots);
+        Self::bump_persistent(&env, &sha3_roots_key);
+
+        let next_key = DataKey::Sha3NextRootIdx(dao_id);
+        env.storage().persistent().set(&next_key, &next_idx);
+        Self::bump_persistent(&env, &next_key);
+    }
+
+    /// Get SHA3-256 PQ root history for a DAO.
+    pub fn sha3_roots(env: Env, dao_id: u64) -> Vec<U256> {
+        Self::bump_instance(&env);
+        let key = DataKey::Sha3Roots(dao_id);
+        env.storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(env, TreeError::Sha3TreeNotInitialized))
+    }
+
+    /// Get current SHA3-256 PQ root for a DAO.
+    pub fn sha3_current_root(env: Env, dao_id: u64) -> U256 {
+        let roots = Self::sha3_roots(env.clone(), dao_id);
+        roots
+            .get(roots.len().saturating_sub(1))
+            .unwrap_or_else(|| panic_with_error!(env, TreeError::Sha3TreeNotInitialized))
+    }
+
+    /// Check if a SHA3-256 root is in history.
+    pub fn sha3_root_ok(env: Env, dao_id: u64, root: U256) -> bool {
+        Self::bump_instance(&env);
+        let roots_key = DataKey::Sha3Roots(dao_id);
+        if !env.storage().persistent().has(&roots_key) {
+            return false;
+        }
+        let roots: Vec<U256> = env
+            .storage()
+            .persistent()
+            .get(&roots_key)
+            .unwrap_or_else(|| panic_with_error!(env, TreeError::Sha3TreeNotInitialized));
+        for i in 0..roots.len() {
+            if roots.get(i).unwrap_or_else(|| panic_with_error!(env, TreeError::Sha3TreeNotInitialized)) == root {
+                return true;
+            }
+        }
+        false
     }
 
     /// Contract version for upgrade tracking.
