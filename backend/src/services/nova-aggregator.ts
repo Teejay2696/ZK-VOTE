@@ -50,9 +50,11 @@ export interface TallyProofPayload {
 
 export class NovaAggregatorService {
   private tempDir: string;
+  private _exec: typeof execAsync;
 
   constructor(tempDir?: string) {
     this.tempDir = tempDir || path.join(process.cwd(), "temp", "nova");
+    this._exec = execAsync;
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
     }
@@ -90,7 +92,7 @@ export class NovaAggregatorService {
 
       if (!fs.existsSync(outputPath)) {
         throw new Error(
-          `Nova aggregator failed to create output proof file: ${stderr}`,
+          `Nova aggregator failed to create output proof file`,
         );
       }
 

@@ -7,17 +7,14 @@
  */
 
 import cluster from "node:cluster";
-import express, { type Express } from "express";
+import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
-import swaggerUi from "swagger-ui-express";
 
-import { buildOpenApiDocument } from "./openapi.js";
-
-// Configuration and types
 import { config, validateEnv, isValidContractId } from "./config.js";
+// Composition root (#358) — explicit construction/wiring of service deps.
+import { buildAppServices } from "./composition-root.js";
 
-// Cluster Service
 import {
   startClusterMaster,
   initWorkerIpc,
@@ -26,7 +23,6 @@ import {
   registerWorkerShutdownHandler,
 } from "./services/cluster.js";
 
-// Services
 import { log, logger } from "./services/logger.js";
 import * as ipfsService from "./services/ipfs.js";
 import { initPinManager } from "./services/ipfs-pin-manager.js";
@@ -40,15 +36,13 @@ import {
   detectAndHandleWalIssue,
 } from "./services/walResilience.js";
 import {
+  startScheduledBackups,
+  stopScheduledBackups,
+} from "./services/backup.js";
+import {
   startMonitor as startPinMonitor,
   stopMonitor as stopPinMonitor,
 } from "./services/ipfs-monitor.js";
-import {
-  server,
-  relayerKeypair,
-  getPendingSequenceLockOps,
-  waitForSequenceLockIdle,
-} from "./services/stellar.js";
 import {
   startDaoSync,
   stopDaoSync,
@@ -71,15 +65,20 @@ import {
   startMemoryMonitor,
   stopMemoryMonitor,
 } from "./services/memory-monitor.js";
-import { closeDb } from "./services/db.js";
 
-// Middleware
-import { csrfGuard, requestLogger, errorHandler, auditMiddleware } from "./middleware/index.js";
+import {
+  csrfGuard,
+  requestLogger,
+  errorHandler,
+  auditMiddleware,
+  metricsMiddleware,
+  degradationContext,
+} from "./middleware/index.js";
 
-// Routes
 import {
   healthRoutes,
   initHealthRoutes,
+  analyticsRoutes,
   votingRoutes,
   daoRoutes,
   ipfsRoutes,
@@ -89,14 +88,24 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
+  metricsRoutes,
+  remediationRoutes,
 } from "./routes/index.js";
-import openApiSpec from "./openapi.js";
 
 // ============================================
 // ENVIRONMENT VALIDATION
 // ============================================
 
 validateEnv();
+initializeTelemetry();
+
+// ============================================
+// COMPOSITION ROOT (#358)
+// ============================================
+// Build and wire every service's dependencies explicitly. Consumer services
+// get their deps from this container, not from module-level globals.
+
+const services = buildAppServices();
 
 // ============================================
 // EXPRESS APP SETUP
@@ -203,25 +212,43 @@ app.use(cors(corsOptions));
 // Logging middleware
 app.use(requestLogger);
 
-// Audit middleware - must be after body parsing and requestLogger, before routes
-// Audits every mutating route (POST/PUT/PATCH/DELETE) with PII redaction, append-only
-app.use(auditMiddleware);
+// Graduated throttling (delays before a client is hard rate-limited)
+app.use(graduatedSlowDown);
 
-// CSRF protection (applied globally)
+// CSRF token generation for safe methods (GET, HEAD, OPTIONS)
+app.use(csrfTokenMiddleware);
+
+// CSRF protection (applied globally for write methods)
 app.use(csrfGuard);
+
+// ============================================
+// CSRF TOKEN ENDPOINT
+// ============================================
+
+// Dedicated endpoint for CSRF token issuance.
+// The SPA calls GET /csrf-token on startup and stores the X-CSRF-Token
+// response header value.  The csrfTokenMiddleware (applied globally above)
+// handles the actual token generation for all GET requests; this route
+// just provides a predictable, documented URL for the frontend to target.
+app.get("/csrf-token", (_req, res) => {
+  // Token is already set in the response header by csrfTokenMiddleware.
+  res.json({ ok: true });
+});
 
 // ============================================
 // ROUTE INITIALIZATION
 // ============================================
 
 // Initialize routes that need dependencies
-initHealthRoutes(server, relayerKeypair.publicKey());
+initHealthRoutes(services.stellar.server, services.stellar.relayerKeypair.publicKey());
 initIndexerRoutes(triggerDaoMembershipSync);
 
 // Mount route handlers (metrics first, before CSRF/auth middleware)
 app.use(metricsRoutes);
 app.use(healthRoutes);
+app.use(analyticsRoutes);
 app.use(remediationRoutes);
+app.use(adminRoutes);
 app.use(noStore, votingRoutes);
 app.use(daoRoutes);
 app.use(ipfsRoutes);
@@ -230,6 +257,7 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
 // Global error handler (must be last)
 app.use(errorHandler);
@@ -242,6 +270,9 @@ let backgroundServicesStarted = false;
 /** Set when the worker/single-process HTTP server starts listening. */
 let httpServer: ReturnType<Express["listen"]> | null = null;
 let shuttingDown = false;
+
+// Supervisor for background services with crash recovery (#176)
+const supervisor = new ServiceSupervisor();
 
 /**
  * Drain in-flight work and exit cleanly (zero-downtime deploys, see #190).
@@ -264,7 +295,7 @@ async function gracefulShutdown(reason: string): Promise<void> {
     log("warn", "shutdown_forced", {
       reason,
       timeoutMs: DRAIN_TIMEOUT_MS,
-      pendingSequenceLockOps: getPendingSequenceLockOps(),
+      pendingSequenceLockOps: services.stellar.getPendingSequenceLockOps(),
       pid: process.pid,
     });
     process.exit(1);
@@ -289,6 +320,7 @@ async function gracefulShutdown(reason: string): Promise<void> {
     });
   });
 
+  await supervisor.stopAll();
   stopBackgroundServices();
   stopAuthScheduler();
   stopWalResilience();
@@ -298,53 +330,14 @@ async function gracefulShutdown(reason: string): Promise<void> {
 
   await httpClosed;
 
-    // Keep the startup banner on stdout for human-readable output
-    console.log(`\nZKVote Relayer running on http://localhost:${PORT}`);
-
-    logger.info("endpoints_registered", {
-      core: [
-        "/health",
-        "/ready",
-        "/config",
-        "/vote",
-        "/proposal/:dao/:prop",
-        "/root/:dao",
-        "/events/:daoId",
-        "/events/notify",
-        "/indexer/status",
-      ],
-      comments: [
-        "/comment/anonymous",
-        "/comments/:dao/:prop",
-        "/comments/:dao/:prop/nonce",
-        "/comment/:dao/:prop/:id",
-        "/comment/edit",
-        "/comment/delete",
-      ],
-      bridge: [
-        "/bridge/vote",
-        "/bridge/nullifier/:daoId/:proposalId/:nullifier",
-        "/bridge/relay",
-      ],
-      ipfs: config.ipfsEnabled
-        ? [
-            "/ipfs/image",
-            "/ipfs/metadata",
-            "/ipfs/:cid",
-            "/ipfs/image/:cid",
-            "/ipfs/health",
-          ]
-        : [],
-    });
-  }
+  const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
 
   clearTimeout(forceExitTimer);
   log("info", "shutdown_complete", {
     reason,
-    cleanDrain: drained,
     pid: process.pid,
   });
-  process.exit(drained ? 0 : 1);
+  process.exit(0);
 }
 
 async function startBackgroundServices(): Promise<void> {
@@ -355,6 +348,9 @@ async function startBackgroundServices(): Promise<void> {
     pid: process.pid,
     isLeader: isLeaderWorker(),
   });
+
+  // Register background services with supervisor for crash recovery (#176)
+  registerSupervisorServices();
 
   // Initialize Pinata and IPFS redundancy layer
   if (config.ipfsEnabled && config.pinataJwt) {
@@ -409,7 +405,7 @@ async function startBackgroundServices(): Promise<void> {
     try {
       await startIndexer(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        server as any,
+        services.stellar.server as any,
         contractIds,
         config.indexerPollIntervalMs,
       );
@@ -453,6 +449,10 @@ async function startBackgroundServices(): Promise<void> {
     startWalCheckpointing(database);
     startWalMonitor(database, dbPath);
     startPeriodicBackups(database, dbPath);
+    // Encrypted snapshot backups (#359) — opt-in via BACKUP_ENCRYPTION_ENABLED.
+    if (config.backupEncryptionEnabled) {
+      startScheduledBackups(config.backupIntervalMs);
+    }
   } catch (err) {
     log("warn", "wal_resilience_start_failed", {
       error: (err as Error).message,
@@ -468,12 +468,24 @@ async function startBackgroundServices(): Promise<void> {
   });
 }
 
-function stopBackgroundServices(): void {
+/**
+ * Stop every background loop.
+ *
+ * Awaits the indexer specifically: its scheduler cancels an in-flight poll
+ * cycle and closes the database only once that cycle has unwound (#323), so a
+ * shutdown that did not await it could close the HTTP server while a poll was
+ * still writing.
+ */
+async function stopBackgroundServices(): Promise<void> {
   if (!backgroundServicesStarted) return;
   backgroundServicesStarted = false;
 
   log("info", "stopping_background_services", { pid: process.pid });
 
+  // Stop supervised services first
+  void supervisor.stopAll();
+
+  // Legacy stop calls (kept for services not yet fully migrated to supervisor)
   stopIndexer();
   stopDaoSync();
   stopMembershipSync();
@@ -481,6 +493,88 @@ function stopBackgroundServices(): void {
   stopSbtTransferWatch();
   stopPinMonitor();
   stopMemoryMonitor();
+  stopScheduledBackups();
+}
+
+/**
+ * Register background services with the supervisor for crash recovery (#176).
+ * The supervisor wraps each service with automatic restart on failure,
+ * exponential backoff, and dependency-aware shutdown ordering.
+ */
+function registerSupervisorServices(): void {
+  // TTL Renewal - most critical (contract storage expiry risk)
+  supervisor.register({
+    name: "ttl_renewal",
+    start: () => startTTLRenewal(),
+    stop: () => stopTTLRenewal(),
+  });
+
+  // SBT Transfer Watch
+  supervisor.register({
+    name: "sbt_transfer_watch",
+    start: () => startSbtTransferWatch(),
+    stop: () => stopSbtTransferWatch(),
+  });
+
+  // Indexer - critical for frontend data freshness
+  supervisor.register({
+    name: "indexer",
+    start: async () => {
+      if (!config.indexerEnabled) return;
+      const contractIds = [config.votingContractId!, config.treeContractId!];
+      if (
+        config.daoRegistryContractId &&
+        isValidContractId(config.daoRegistryContractId)
+      ) {
+        contractIds.push(config.daoRegistryContractId);
+      }
+      if (
+        config.membershipSbtContractId &&
+        isValidContractId(config.membershipSbtContractId)
+      ) {
+        contractIds.push(config.membershipSbtContractId);
+      }
+      await startIndexer(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        server as any,
+        contractIds,
+        config.indexerPollIntervalMs,
+      );
+    },
+    stop: () => stopIndexer(),
+  });
+
+  // DAO Sync
+  supervisor.register({
+    name: "dao_sync",
+    start: () => {
+      if (
+        config.daoRegistryContractId &&
+        isValidContractId(config.daoRegistryContractId)
+      ) {
+        startDaoSync();
+      }
+    },
+    stop: () => stopDaoSync(),
+  });
+
+  // Membership Sync - depends on DAO Sync being active
+  supervisor.register({
+    name: "membership_sync",
+    start: () => {
+      if (
+        config.membershipSbtContractId &&
+        isValidContractId(config.membershipSbtContractId)
+      ) {
+        startMembershipSync();
+      }
+    },
+    stop: () => stopMembershipSync(),
+    dependencies: ["dao_sync"],
+  });
+
+  // Fire-and-forget: startAll resolves failures internally
+  void supervisor.startAll();
 }
 
 // ============================================
@@ -502,7 +596,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         isLeader: isLeaderWorker(),
         network: config.networkPassphrase,
         rpcUrl: config.rpcUrl,
-        relayer: relayerKeypair.publicKey(),
+        relayer: services.stellar.relayerKeypair.publicKey(),
       });
 
       console.log(`\nZKVote Relayer running on http://localhost:${PORT}`);
@@ -564,7 +658,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             log("info", "worker_demoted_stopping_background_services", {
               pid: process.pid,
             });
-            stopBackgroundServices();
+            await stopBackgroundServices();
           }
         });
 
@@ -579,7 +673,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     registerWorkerShutdownHandler((reason) => {
       void gracefulShutdown(reason);
     });
-    registerShutdownHandler(gracefulShutdown);
 
     process.on("SIGTERM", () => {
       void gracefulShutdown("SIGTERM");

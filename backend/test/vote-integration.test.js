@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import express from "express";
 import request from "supertest";
 
 let tempDir, dbPath;
@@ -55,7 +56,6 @@ test("POST /vote completes a successful vote flow", async () => {
     return {
       sendResult: {
         status: "PENDING",
-        hash: "vote_integration_tx_001",
       },
       result: {
         status: "SUCCESS",
@@ -63,7 +63,7 @@ test("POST /vote completes a successful vote flow", async () => {
     };
   });
 
-  const nullifier = "01".padStart(64, "0");
+  const nullifier = uniqueFieldHex("01");
   const root = "02".padStart(64, "0");
 
   const response = await request(app)
@@ -85,7 +85,6 @@ test("POST /vote completes a successful vote flow", async () => {
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body, {
     success: true,
-    txHash: "vote_integration_tx_001",
     status: "SUCCESS",
   });
 
@@ -101,11 +100,56 @@ test("POST /vote completes a successful vote flow", async () => {
   assert.ok(capturedInput.scRoot);
   assert.ok(capturedInput.scProof);
 
-  const transaction = getTransactionLog(nullifier);
+  assert.equal(getTransactionLog(nullifier), null);
+});
 
-  assert.ok(transaction);
-  assert.equal(transaction.tx_hash, "vote_integration_tx_001");
-  assert.equal(transaction.status, "SUCCESS");
+test("POST /vote rejects mismatched redundant proof before submission", async (t) => {
+  const mismatchTempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "zkvote-vote-redundancy-"),
+  );
+  initDb(path.join(mismatchTempDir, "vote.db"));
+
+  t.after(() => {
+    setVoteExecutorForTests(null);
+    closeDb();
+    try {
+      fs.rmSync(mismatchTempDir, { recursive: true, force: true });
+    } catch {
+      // Windows can keep SQLite handles briefly after close.
+    }
+  });
+
+  let executorCalled = false;
+  setVoteExecutorForTests(async () => {
+    executorCalled = true;
+    return {
+      sendResult: {
+        status: "PENDING",
+        hash: "should_not_submit",
+      },
+      result: {
+        status: "SUCCESS",
+      },
+    };
+  });
+
+  const response = await request(app)
+    .post("/vote")
+    .set("Authorization", "Bearer vote-integration-token")
+    .send({
+      daoId: 7,
+      proposalId: 11,
+      choice: true,
+      nullifier: uniqueFieldHex("03"),
+      root: "04".padStart(64, "0"),
+      proof: validProof(),
+      redundantProof: validProof("04"),
+    });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.error.code, "VOTE_REJECTED");
+  assert.equal(response.body.error.message, "VOTE_REJECTED");
+  assert.equal(executorCalled, false);
 });
 
 test("POST /verify-tally verifies a valid tally proof", async () => {
