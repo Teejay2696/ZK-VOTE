@@ -322,22 +322,21 @@ export default function DAOInfoPanel({
         anonymitySetSize: 0,
       };
       try {
-        const [treeInfoResult, rootHistoryResult, anonymityResult] = await Promise.all([
+        const [treeInfoResult, analyticsResult] = await Promise.all([
           membershipTree.get_tree_info({ dao_id: BigInt(daoId) }),
-          (membershipTree as any).root_history_len
-            ? (membershipTree as any).root_history_len({ dao_id: BigInt(daoId) })
-            : Promise.resolve({ result: BigInt(0) }),
-          (membershipTree as any).anonymity_set_size
-            ? (membershipTree as any).anonymity_set_size({ dao_id: BigInt(daoId) })
-            : Promise.resolve({ result: BigInt(0) }),
+          fetch(`${RELAYER_URL}/analytics/${daoId}`).then((response) =>
+            response.ok ? response.json() : null,
+          ),
         ]);
         if (treeInfoResult.result) {
           treeInfo = {
             depth: Number(treeInfoResult.result[0]),
             leafCount: Number(treeInfoResult.result[1]),
             merkleRoot: treeInfoResult.result[2]?.toString() || "0",
-            rootHistoryLen: Number(rootHistoryResult?.result ?? 0),
-            anonymitySetSize: Number(anonymityResult?.result ?? treeInfoResult.result[1] ?? 0),
+            rootHistoryLen: Number(analyticsResult?.rootHistoryLen ?? 0),
+            anonymitySetSize: Number(
+              analyticsResult?.anonymitySetSize ?? treeInfoResult.result[1] ?? 0,
+            ),
           };
         }
       } catch {

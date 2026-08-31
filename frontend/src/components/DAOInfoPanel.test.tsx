@@ -5,8 +5,6 @@ import DAOInfoPanel from "./DAOInfoPanel";
 const mockGetDao = vi.fn();
 const mockGetMemberCount = vi.fn();
 const mockGetTreeInfo = vi.fn();
-const mockGetRootHistoryLen = vi.fn();
-const mockGetAnonymitySetSize = vi.fn();
 const mockVkVersion = vi.fn();
 
 vi.mock("../lib/readOnlyContracts", () => ({
@@ -18,8 +16,6 @@ vi.mock("../lib/readOnlyContracts", () => ({
   }),
   getReadOnlyMembershipTree: () => ({
     get_tree_info: mockGetTreeInfo,
-    root_history_len: mockGetRootHistoryLen,
-    anonymity_set_size: mockGetAnonymitySetSize,
   }),
   getReadOnlyVoting: () => ({
     vk_version: mockVkVersion,
@@ -34,6 +30,10 @@ vi.mock("../lib/client", () => ({
 describe("DAOInfoPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ rootHistoryLen: 27, anonymitySetSize: 42 }),
+    } as Response);
     mockGetDao.mockResolvedValue({
       result: {
         name: "Test DAO",
@@ -47,8 +47,6 @@ describe("DAOInfoPanel", () => {
     mockGetTreeInfo.mockResolvedValue({
       result: [18, 42, BigInt("1234567890")],
     });
-    mockGetRootHistoryLen.mockResolvedValue({ result: BigInt(27) });
-    mockGetAnonymitySetSize.mockResolvedValue({ result: BigInt(42) });
     mockVkVersion.mockResolvedValue({ result: BigInt(1) });
   });
 
