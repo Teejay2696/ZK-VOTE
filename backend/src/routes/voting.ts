@@ -10,6 +10,7 @@ import {
   type Response,
   type NextFunction,
 } from "express";
+import { randomUUID } from "node:crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 import { config } from "../config.js";
@@ -57,6 +58,10 @@ import {
   cleanupExpiredVoteSubmissions,
   storeVoteReceipt,
   getVoteReceipt,
+  createVoteJob,
+  getVoteJobById,
+  updateVoteJobStatus,
+  getVoteQueueDepth,
 } from "../services/db.js";
 import {
   calculateProofHash,
@@ -104,6 +109,306 @@ interface VoteExecutionResult {
 type VoteExecutor = (input: VoteExecutionInput) => Promise<VoteExecutionResult>;
 
 let voteExecutorOverride: VoteExecutor | null = null;
+
+interface VoteQueuedPayload {
+  daoId: number;
+  proposalId: number;
+  choice: boolean;
+  nullifier: string;
+  root: string;
+  proof: unknown;
+  nonce?: string;
+  timestamp?: number;
+  voterPublicKey?: string;
+  voterSignature?: string;
+}
+
+interface VoteQueueJob {
+  id: string;
+  nullifier: string;
+  payload: VoteQueuedPayload;
+  attempts: number;
+  maxAttempts: number;
+}
+
+const voteQueue: VoteQueueJob[] = [];
+let voteQueueWorkerRunning = false;
+const voteJobListeners = new Set<
+  (event: {
+    jobId: string;
+    status: string;
+    txHash?: string;
+    error?: string;
+  }) => void
+>();
+
+export function subscribeVoteJobStatus(
+  listener: (event: {
+    jobId: string;
+    status: string;
+    txHash?: string;
+    error?: string;
+  }) => void,
+): () => void {
+  voteJobListeners.add(listener);
+  return () => voteJobListeners.delete(listener);
+}
+
+function emitVoteJobStatus(
+  jobId: string,
+  status: string,
+  txHash?: string,
+  error?: string,
+): void {
+  for (const listener of voteJobListeners) {
+    listener({ jobId, status, txHash, error });
+  }
+}
+
+async function executeQueuedVoteJob(payload: VoteQueuedPayload): Promise<{
+  success: boolean;
+  txHash?: string;
+  status: string;
+  error?: string;
+}> {
+  const {
+    daoId,
+    proposalId,
+    choice,
+    nullifier,
+    root,
+    proof,
+    nonce,
+    timestamp,
+  } = payload;
+
+  const scNullifier = u256ToScVal(nullifier);
+  const scRoot = u256ToScVal(root);
+  const scProof = proofToScVal(proof as any);
+
+  if (config.testMode) {
+    if (!voteExecutorOverride) {
+      throw new Error("SIMULATION_FAILED:VOTE_REJECTED");
+    }
+    const execution = await voteExecutorOverride({
+      daoId,
+      proposalId,
+      choice,
+      nullifier,
+      root,
+      proof,
+      scNullifier,
+      scRoot,
+      scProof,
+    });
+
+    if (execution.result.status === "SUCCESS") {
+      const txHash = execution.sendResult.hash || null;
+      updateTransactionLogStatus(nullifier, "SUCCESS", txHash ?? undefined);
+      if (txHash) {
+        updateVoteSubmission(nullifier, "confirmed", txHash);
+      }
+      return { success: true, txHash, status: execution.result.status };
+    }
+
+    const txHash = execution.sendResult.hash || undefined;
+    if (txHash) {
+      updateTransactionLogStatus(nullifier, "FAILED", txHash);
+      updateVoteSubmission(nullifier, "failed", txHash);
+    }
+    return {
+      success: false,
+      txHash,
+      status: execution.result.status,
+      error: "Transaction failed",
+    };
+  }
+
+  const contract = new StellarSdk.Contract(config.votingContractId!);
+  const args = [
+    StellarSdk.nativeToScVal(daoId, { type: "u64" }),
+    StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
+    StellarSdk.nativeToScVal(choice, { type: "bool" }),
+    scNullifier,
+    scRoot,
+    scProof,
+  ];
+  const operation = contract.call("vote", ...args);
+
+  const { sendResult, result } = await withSequenceLock(async () => {
+    const account = await (server as StellarSdk.rpc.Server).getAccount(
+      relayerKeypair.publicKey(),
+    );
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: "100000",
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(30)
+      .build();
+
+    const simResult = await callWithTimeout(
+      () =>
+        simulateWithBackoff(() =>
+          (server as StellarSdk.rpc.Server).simulateTransaction(tx),
+        ),
+      "simulate_vote",
+    );
+
+    if (!StellarSdk.rpc.Api.isSimulationSuccess(simResult)) {
+      throw new Error("SIMULATION_FAILED:VOTE_REJECTED");
+    }
+
+    const preparedTx = StellarSdk.rpc
+      .assembleTransaction(tx, simResult)
+      .build();
+    preparedTx.sign(relayerKeypair as StellarSdk.Keypair);
+    const sr = await callWithTimeout(
+      () => (server as StellarSdk.rpc.Server).sendTransaction(preparedTx),
+      "send_vote",
+    );
+
+    if (sr.status === "ERROR") {
+      const isBadSeq = sequenceManager.handleTxError(
+        typeof (sr as any).errorResult === "string"
+          ? (sr as any).errorResult
+          : JSON.stringify((sr as any).errorResult ?? ""),
+      );
+      if (nullifier) {
+        updateTransactionLogStatus(nullifier, "FAILED");
+        updateVoteSubmission(nullifier, "failed");
+      }
+      throw new Error(isBadSeq ? "SUBMIT_FAILED_BAD_SEQ" : "SUBMIT_FAILED");
+    }
+
+    if (nullifier && sr.hash) {
+      recordTransactionLog(nullifier, sr.hash, "PENDING");
+    }
+
+    const r = await callWithTimeout(
+      () => waitForTransaction(sr.hash),
+      "wait_for_vote",
+    );
+
+    return { sendResult: sr, result: r };
+  });
+
+  if (result.status === "SUCCESS") {
+    if (nullifier && sendResult.hash) {
+      updateTransactionLogStatus(nullifier, "SUCCESS", sendResult.hash);
+      updateVoteSubmission(nullifier, "confirmed", sendResult.hash);
+    }
+    return { success: true, txHash: sendResult.hash, status: result.status };
+  }
+
+  if (nullifier && sendResult.hash) {
+    updateTransactionLogStatus(nullifier, "FAILED", sendResult.hash);
+    updateVoteSubmission(nullifier, "failed", sendResult.hash);
+  }
+  return {
+    success: false,
+    txHash: sendResult.hash,
+    status: result.status,
+    error: "Transaction failed",
+  };
+}
+
+async function processVoteQueue(): Promise<void> {
+  while (voteQueue.length > 0) {
+    const job = voteQueue.shift();
+    if (!job) break;
+
+    const attempts = job.attempts + 1;
+    updateVoteJobStatus(job.id, "PROCESSING", { attempts });
+    emitVoteJobStatus(job.id, "PROCESSING");
+
+    try {
+      const outcome = await executeQueuedVoteJob(job.payload);
+      if (outcome.success) {
+        updateVoteJobStatus(job.id, "COMPLETED", {
+          txHash: outcome.txHash,
+          attempts,
+        });
+        emitVoteJobStatus(job.id, "COMPLETED", outcome.txHash);
+      } else {
+        const shouldDeadLetter = attempts >= job.maxAttempts;
+        updateVoteJobStatus(
+          job.id,
+          shouldDeadLetter ? "DEAD_LETTER" : "FAILED",
+          {
+            attempts,
+            errorMessage: outcome.error,
+            txHash: outcome.txHash,
+          },
+        );
+        emitVoteJobStatus(
+          job.id,
+          shouldDeadLetter ? "DEAD_LETTER" : "FAILED",
+          outcome.txHash,
+          outcome.error,
+        );
+        if (!shouldDeadLetter) {
+          voteQueue.push({ ...job, attempts });
+        }
+      }
+    } catch (error) {
+      const err = error as Error;
+      const shouldDeadLetter = attempts >= job.maxAttempts;
+      updateVoteJobStatus(job.id, shouldDeadLetter ? "DEAD_LETTER" : "FAILED", {
+        attempts,
+        errorMessage: err.message,
+      });
+      emitVoteJobStatus(
+        job.id,
+        shouldDeadLetter ? "DEAD_LETTER" : "FAILED",
+        undefined,
+        err.message,
+      );
+      if (!shouldDeadLetter) {
+        voteQueue.push({ ...job, attempts });
+      }
+    }
+  }
+
+  voteQueueWorkerRunning = false;
+}
+
+function enqueueQueuedVote(payload: VoteQueuedPayload): {
+  jobId: string;
+  status: string;
+} {
+  const depth = getVoteQueueDepth();
+  if (depth >= config.voteQueueMaxDepth) {
+    throw new Error("VOTE_QUEUE_FULL");
+  }
+
+  const jobId = randomUUID();
+  const job: VoteQueueJob = {
+    id: jobId,
+    nullifier: payload.nullifier,
+    payload,
+    attempts: 0,
+    maxAttempts: 3,
+  };
+
+  createVoteJob(
+    jobId,
+    payload.nullifier,
+    payload.daoId,
+    payload.proposalId,
+    JSON.stringify(payload),
+  );
+  voteQueue.push(job);
+  emitVoteJobStatus(jobId, "QUEUED");
+  updateVoteJobStatus(jobId, "QUEUED");
+
+  if (!voteQueueWorkerRunning) {
+    voteQueueWorkerRunning = true;
+    void processVoteQueue();
+  }
+
+  return { jobId, status: "QUEUED" };
+}
 
 /**
  * Replace only the external Stellar submission boundary in test mode.
@@ -572,230 +877,31 @@ router.post(
         }
       }
 
-      // Convert inputs to Soroban types
-      let scNullifier: StellarSdk.xdr.ScVal;
-      let scRoot: StellarSdk.xdr.ScVal;
-      let scProof: StellarSdk.xdr.ScVal;
-      const proofVerifyStart = process.hrtime.bigint();
+      let queuePayload: VoteQueuedPayload = {
+        daoId,
+        proposalId,
+        choice,
+        nullifier,
+        root,
+        proof,
+        nonce,
+        timestamp,
+      };
+
       try {
-        scNullifier = u256ToScVal(nullifier);
-        scRoot = u256ToScVal(root);
-        scProof = proofToScVal(proof);
-        const proofVerifyDuration =
-          Number(process.hrtime.bigint() - proofVerifyStart) / 1e9;
-        proofVerificationDuration.observe(
-          { dao_id: String(daoId), result: "ok" },
-          proofVerifyDuration,
-        );
-        proofSubmissionsTotal.inc({ result: "accepted" });
-      } catch (err) {
-        const proofVerifyDuration =
-          Number(process.hrtime.bigint() - proofVerifyStart) / 1e9;
-        proofVerificationDuration.observe(
-          { dao_id: String(daoId), result: "error" },
-          proofVerifyDuration,
-        );
-        proofValidationErrors.inc({ error_kind: "invalid_format" });
-        proofSubmissionsTotal.inc({ result: "rejected" });
-        return res.status(400).json({ error: (err as Error).message });
-      }
-
-      if (config.testMode) {
-        if (!voteExecutorOverride) {
-          return res.status(400).json({
-            error: "Simulation failed (test mode)",
-          });
-        }
-
-        const execution = await voteExecutorOverride({
-          daoId,
-          proposalId,
-          choice,
-          nullifier,
-          root,
-          proof,
-          scNullifier,
-          scRoot,
-          scProof,
-        });
-
-        if (nullifier && execution.sendResult.hash) {
-          recordTransactionLog(nullifier, execution.sendResult.hash, "PENDING");
-        }
-
-        return respondToVoteExecution(
-          res,
-          execution,
-          nullifier,
-          daoId,
-          proposalId,
-        );
-      }
-
-      // Build contract call
-      const contract = new StellarSdk.Contract(config.votingContractId!);
-
-      // Extract relayer address and convert to ScVal
-      const relayerAddress = relayerKeypair.publicKey();
-      const scRelayerAddress = StellarSdk.nativeToScVal(
-        relayerAddress,
-        { type: "address" },
-      );
-
-      const args = [
-        StellarSdk.nativeToScVal(daoId, { type: "u64" }),
-        StellarSdk.nativeToScVal(proposalId, { type: "u64" }),
-        StellarSdk.nativeToScVal(choice, { type: "bool" }),
-        scNullifier,
-        scRoot,
-        scProof,
-      ];
-
-      const operation = contract.call("vote", ...args);
-
-      // Serialize account fetch + build + simulate + sign + submit under sequence lock
-      // to prevent nonce race conditions between concurrent requests
-      const relayStart = process.hrtime.bigint();
-      relayQueueDepth.inc();
-      const { sendResult, result } = await withSequenceLock(async () => {
-        // Get relayer account
-        const account = await (server as StellarSdk.rpc.Server).getAccount(
-          relayerKeypair.publicKey(),
-        );
-
-        // Build transaction
-        const tx = new StellarSdk.TransactionBuilder(account, {
-          fee: "100000",
-          networkPassphrase: config.networkPassphrase,
-        })
-          .addOperation(operation)
-          .setTimeout(30)
-          .build();
-
-        // Simulate
-        log("info", "simulate_vote", { daoId, proposalId });
-        const simResult = await callWithTimeout(
-          () =>
-            simulateWithBackoff(() =>
-              (server as StellarSdk.rpc.Server).simulateTransaction(tx),
-            ),
-          "simulate_vote",
-        );
-
-        if (!StellarSdk.rpc.Api.isSimulationSuccess(simResult)) {
-          log("warn", "simulation_failed", {
-            daoId,
-            proposalId,
-          });
-          relayErrors.inc({ error_type: "simulation" });
-          // All proof/eligibility failures surface as VOTE_REJECTED — never
-          // expose which specific check failed (THREAT_MODEL.md §privacy).
-          throw new Error("SIMULATION_FAILED:VOTE_REJECTED");
-        }
-
-        // Prepare and sign
-        const preparedTx = StellarSdk.rpc
-          .assembleTransaction(tx, simResult)
-          .build();
-        preparedTx.sign(relayerKeypair as StellarSdk.Keypair);
-
-        // Submit
-        log("info", "submit_vote", { daoId, proposalId });
-        const sr = await callWithTimeout(
-          () => (server as StellarSdk.rpc.Server).sendTransaction(preparedTx),
-          "send_vote",
-        );
-
-        if (sr.status === "ERROR") {
-          // tx_bad_seq: sequence desynchronized — mark dirty and retry once
-          const isBadSeq = sequenceManager.handleTxError(
-            typeof (sr as any).errorResult === "string"
-              ? (sr as any).errorResult
-              : JSON.stringify((sr as any).errorResult ?? ""),
-          );
-          if (nullifier) {
-            updateTransactionLogStatus(nullifier, "FAILED");
-          }
-          if (idempotencyKey) {
-            updateVoteSubmission(idempotencyKey, "failed");
-          }
-          relayErrors.inc({ error_type: isBadSeq ? "sequence_lock" : "submission" });
-          log("error", "submit_failed", {
-            daoId,
-            proposalId,
-            error: (sr as any).errorResult,
-            isBadSeq,
-          });
-          throw new Error(isBadSeq ? "SUBMIT_FAILED_BAD_SEQ" : "SUBMIT_FAILED");
-        }
-
-        if (nullifier && sr.hash) {
-          recordTransactionLog(nullifier, sr.hash, "PENDING");
-        }
-
-        // Wait for confirmation
-        log("info", "submitted", { txHash: sr.hash, daoId, proposalId });
-        const r = await callWithTimeout(
-          () => waitForTransaction(sr.hash),
-          "wait_for_vote",
-        );
-
-        return { sendResult: sr, result: r };
-      });
-
-      if (result.status === "SUCCESS") {
-        if (nullifier && sendResult.hash) {
-          updateTransactionLogStatus(nullifier, "SUCCESS", sendResult.hash);
-        }
-        if (idempotencyKey && sendResult.hash) {
-          updateVoteSubmission(idempotencyKey, "confirmed", sendResult.hash);
-        }
-        const relayDurationSec =
-          Number(process.hrtime.bigint() - relayStart) / 1e9;
-        relayQueueDepth.dec();
-        relayAttemptsTotal.inc({ status: "success" });
-        relayDuration.observe({ status: "success" }, relayDurationSec);
-        votesProcessed.inc({ status: "success" });
-        log("info", "vote_success", {
-          txHash: sendResult.hash,
-          daoId,
-          proposalId,
-        });
-        const receipt = createSubmissionReceipt(
-          sendResult.hash,
-          nullifier,
-          daoId,
-          proposalId,
-          commitmentHash || nullifier,
-        );
-        res.json({
+        const { jobId, status } = enqueueQueuedVote(queuePayload);
+        res.status(202).json({
           success: true,
-          txHash: sendResult.hash,
-          status: result.status,
-          receipt,
+          jobId,
+          status,
+          message: "Vote accepted for async processing",
         });
-      } else {
-        if (nullifier && sendResult.hash) {
-          updateTransactionLogStatus(nullifier, "FAILED", sendResult.hash);
+        return;
+      } catch (err) {
+        if ((err as Error).message === "VOTE_QUEUE_FULL") {
+          return res.status(429).json({ error: "Vote queue is full" });
         }
-        if (idempotencyKey && sendResult.hash) {
-          updateVoteSubmission(idempotencyKey, "failed", sendResult.hash);
-        }
-        const relayDurationSec =
-          Number(process.hrtime.bigint() - relayStart) / 1e9;
-        relayQueueDepth.dec();
-        relayAttemptsTotal.inc({ status: "failed" });
-        relayDuration.observe({ status: "failed" }, relayDurationSec);
-        votesProcessed.inc({ status: "failed" });
-        log("error", "vote_failed", {
-          txHash: sendResult.hash,
-          status: result.status,
-        });
-        res.status(500).json({
-          error: "Transaction failed",
-          txHash: sendResult.hash,
-          status: result.status,
-        });
+        throw err;
       }
     } catch (err) {
       if (nullifier) {
@@ -859,6 +965,29 @@ router.post(
     }
   }) as AsyncHandler,
 );
+
+router.get("/vote/status/:jobId", (req: Request, res: Response) => {
+  const { jobId } = req.params;
+  const job = getVoteJobById(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: "Job not found" });
+  }
+
+  const status = job.status;
+  const payload: Record<string, unknown> = {
+    jobId: job.id,
+    status,
+    attempts: job.attempts,
+    createdAt: new Date(job.created_at).toISOString(),
+    updatedAt: new Date(job.updated_at).toISOString(),
+  };
+
+  if (job.tx_hash) payload.txHash = job.tx_hash;
+  if (job.error_message) payload.error = job.error_message;
+
+  return res.json(payload);
+});
 
 /**
  * GET /proposal/:daoId/:proposalId - Get proposal results

@@ -360,6 +360,7 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(300000),
+  VOTE_QUEUE_MAX_DEPTH: z.coerce.number().int().positive().default(100),
 
   RELAYER_TEST_MODE: z
     .enum(["true", "false"])
@@ -648,6 +649,7 @@ export const config = {
 
   // Vote submission idempotency
   voteSubmissionPendingTtlMs: validatedEnv.VOTE_SUBMISSION_PENDING_TTL_MS,
+  voteQueueMaxDepth: validatedEnv.VOTE_QUEUE_MAX_DEPTH,
 
   // Test mode
   testMode: validatedEnv.RELAYER_TEST_MODE,
