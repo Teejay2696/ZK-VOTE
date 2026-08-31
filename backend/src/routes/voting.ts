@@ -22,6 +22,9 @@ import {
   waitForTransaction,
   withSequenceLock,
   sequenceManager,
+  submitVoteViaRelayerQuorum,
+  scheduleCoverTraffic,
+  monitorMissingVotes,
   u256ToScVal,
   proofToScVal,
   scValToU256Hex,
@@ -66,6 +69,11 @@ import { votesProcessed } from "../services/metrics.js";
 import { sharedSingleFlight } from "../utils/singleflight.js";
 
 const router = Router();
+
+if (!config.testMode) {
+  scheduleCoverTraffic();
+  monitorMissingVotes();
+}
 
 interface VoteExecutionInput {
   daoId: number;
@@ -540,18 +548,16 @@ router.post(
           throw new Error("SIMULATION_FAILED:VOTE_REJECTED");
         }
 
-        // Prepare and sign
-        const preparedTx = StellarSdk.rpc
-          .assembleTransaction(tx, simResult)
-          .build();
-        preparedTx.sign(relayerKeypair as StellarSdk.Keypair);
-
-        // Submit
+        // Prepare and dispatch through the relay quorum. The quorum signs
+        // using MPC key shares and selects an anonymous egress peer.
         log("info", "submit_vote", { daoId, proposalId });
-        const sr = await callWithTimeout(
-          () => (server as StellarSdk.rpc.Server).sendTransaction(preparedTx),
-          "send_vote",
-        );
+        const sr = await submitVoteViaRelayerQuorum({
+          transaction: tx,
+          simulationResult: simResult,
+          daoId,
+          proposalId,
+          nullifier,
+        });
 
         if (sr.status === "ERROR") {
           // tx_bad_seq: sequence desynchronized — mark dirty and retry once
