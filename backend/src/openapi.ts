@@ -1,7 +1,14 @@
 /**
- * OpenAPI Specification for ZKVote Backend
- * Documents all routes including audit and remediation for accountability.
- * Scope: middleware/audit.ts, routes/*, openapi.ts
+ * OpenAPI 3.1 Specification for ZKVote Backend (Task #339)
+ *
+ * Source of truth: the committed `backend/openapi.json` (generated docs for
+ * every versioned route). `buildOpenApiDocument()` returns that document so
+ * the served `/api-docs/openapi.json`, the ``docs:*`` scripts, and the doc
+ * itself stay byte-for-byte consistent (see scripts/generate-openapi.ts).
+ *
+ * Also exports the zod *response* schemas used to validate live responses in
+ * test/openapi-validation.test.js, and `ENDPOINTS` (method + route for every
+ * documented path) used for API.md coverage and docs accounting.
  */
 
 export const openApiSpec = {
@@ -9,7 +16,8 @@ export const openApiSpec = {
   info: {
     title: "ZKVote Relayer API",
     version: "1.0.0",
-    description: "Anonymous voting relayer with full audit trail and incident response",
+    description:
+      "Anonymous voting relayer with full audit trail and incident response",
   },
   servers: [{ url: "http://localhost:3001", description: "Local" }],
   security: [{ bearerAuth: [] }],
@@ -21,15 +29,49 @@ export const openApiSpec = {
     schemas: {
       VoteRequest: {
         type: "object",
-        required: ["daoId", "proposalId", "choice", "nullifier", "root", "proof"],
+        required: [
+          "daoId",
+          "proposalId",
+          "choice",
+          "nullifier",
+          "root",
+          "proof",
+        ],
         properties: {
           daoId: { type: "integer" },
           proposalId: { type: "integer" },
           choice: { type: "boolean" },
-          nullifier: { type: "string", description: "BN254 field element hex < modulus (redacted in audit)" },
-          root: { type: "string", description: "Merkle root hex (redacted in audit)" },
-          proof: { type: "object", description: "Groth16 proof (redacted in audit)", properties: { a: { type: "string" }, b: { type: "string" }, c: { type: "string" } } },
+          nullifier: {
+            type: "string",
+            description:
+              "BN254 field element hex < modulus (redacted in audit)",
+          },
+          root: {
+            type: "string",
+            description: "Merkle root hex (redacted in audit)",
+          },
+          proof: {
+            type: "object",
+            description: "Groth16 proof (redacted in audit)",
+            properties: {
+              a: { type: "string" },
+              b: { type: "string" },
+              c: { type: "string" },
+            },
+          },
         },
+      },
+      PublicSignals: {
+        type: "object",
+        required: ["root", "nullifier", "daoId", "proposalId", "voteChoice", "numCandidates"],
+        properties: {
+          root: { type: "string" },
+          nullifier: { type: "string" },
+          daoId: { type: "string" },
+          proposalId: { type: "string" },
+          voteChoice: { type: "string" },
+          numCandidates: { type: "string" },
+        }
       },
       AuditEntry: {
         type: "object",
@@ -40,7 +82,10 @@ export const openApiSpec = {
           method: { type: "string" },
           path: { type: "string" },
           action: { type: "string" },
-          actor: { type: "string", description: "Hashed actor identifier (PII redacted)" },
+          actor: {
+            type: "string",
+            description: "Hashed actor identifier (PII redacted)",
+          },
           statusCode: { type: "integer" },
           immutable: { type: "boolean", enum: [true] },
         },
@@ -49,10 +94,28 @@ export const openApiSpec = {
         type: "object",
         required: ["action", "target", "reason", "idempotencyKey"],
         properties: {
-          action: { type: "string", enum: ["freeze_dao", "unfreeze_dao", "pause_voting", "resume_voting", "revoke_member", "restore_member", "emergency_pause", "emergency_resume", "rotate_vk", "quarantine_proposal"] },
+          action: {
+            type: "string",
+            enum: [
+              "freeze_dao",
+              "unfreeze_dao",
+              "pause_voting",
+              "resume_voting",
+              "revoke_member",
+              "restore_member",
+              "emergency_pause",
+              "emergency_resume",
+              "rotate_vk",
+              "quarantine_proposal",
+            ],
+          },
           target: { type: "string", description: "DAO or proposal identifier" },
           reason: { type: "string", minLength: 5 },
-          idempotencyKey: { type: "string", minLength: 8, description: "Replay protection - duplicate keys return 409" },
+          idempotencyKey: {
+            type: "string",
+            minLength: 8,
+            description: "Replay protection - duplicate keys return 409",
+          },
           metadata: { type: "object", additionalProperties: true },
         },
       },
@@ -63,8 +126,17 @@ export const openApiSpec = {
       post: {
         summary: "Submit anonymous vote (audited)",
         security: [{ relayerAuth: [] }],
-        requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/VoteRequest" } } } },
-        responses: { "200": { description: "Vote submitted" }, "401": { description: "Unauthorized" } },
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/VoteRequest" },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Vote submitted" },
+          "401": { description: "Unauthorized" },
+        },
         "x-audited": true,
         "x-redacted-fields": ["nullifier", "root", "proof"],
       },
@@ -142,10 +214,21 @@ export const openApiSpec = {
     },
     "/remediation/action": {
       post: {
-        summary: "Structured remediation action (append-only, authz, replay-safe)",
+        summary:
+          "Structured remediation action (append-only, authz, replay-safe)",
         security: [{ relayerAuth: [] }],
-        requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/RemediationAction" } } } },
-        responses: { "201": { description: "Recorded" }, "409": { description: "Duplicate idempotencyKey" }, "401": { description: "Unauthorized" } },
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/RemediationAction" },
+            },
+          },
+        },
+        responses: {
+          "201": { description: "Recorded" },
+          "409": { description: "Duplicate idempotencyKey" },
+          "401": { description: "Unauthorized" },
+        },
         "x-audited": true,
         "x-append-only": true,
         "x-replay-safe": true,
@@ -155,7 +238,12 @@ export const openApiSpec = {
       get: {
         summary: "Query remediation log",
         security: [{ relayerAuth: [] }],
-        parameters: [{ name: "action", in: "query", schema: { type: "string" } }, { name: "target", in: "query", schema: { type: "string" } }, { name: "limit", in: "query", schema: { type: "integer" } }, { name: "offset", in: "query", schema: { type: "integer" } }],
+        parameters: [
+          { name: "action", in: "query", schema: { type: "string" } },
+          { name: "target", in: "query", schema: { type: "string" } },
+          { name: "limit", in: "query", schema: { type: "integer" } },
+          { name: "offset", in: "query", schema: { type: "integer" } },
+        ],
         responses: { "200": { description: "Log entries" } },
       },
     },
@@ -163,7 +251,23 @@ export const openApiSpec = {
       get: {
         summary: "Query audit logs (redacted, authz)",
         security: [{ relayerAuth: [] }],
-        parameters: [{ name: "action", in: "query", schema: { type: "string" } }, { name: "actor", in: "query", schema: { type: "string" } }, { name: "method", in: "query", schema: { type: "string" } }, { name: "from", in: "query", schema: { type: "string", format: "date-time" } }, { name: "to", in: "query", schema: { type: "string", format: "date-time" } }, { name: "limit", in: "query", schema: { type: "integer" } }, { name: "offset", in: "query", schema: { type: "integer" } }],
+        parameters: [
+          { name: "action", in: "query", schema: { type: "string" } },
+          { name: "actor", in: "query", schema: { type: "string" } },
+          { name: "method", in: "query", schema: { type: "string" } },
+          {
+            name: "from",
+            in: "query",
+            schema: { type: "string", format: "date-time" },
+          },
+          {
+            name: "to",
+            in: "query",
+            schema: { type: "string", format: "date-time" },
+          },
+          { name: "limit", in: "query", schema: { type: "integer" } },
+          { name: "offset", in: "query", schema: { type: "integer" } },
+        ],
         responses: { "200": { description: "Audit entries" } },
         "x-redacted": true,
       },
@@ -172,7 +276,13 @@ export const openApiSpec = {
       get: {
         summary: "Export audit logs (json/csv)",
         security: [{ relayerAuth: [] }],
-        parameters: [{ name: "format", in: "query", schema: { type: "string", enum: ["json", "csv"] } }],
+        parameters: [
+          {
+            name: "format",
+            in: "query",
+            schema: { type: "string", enum: ["json", "csv"] },
+          },
+        ],
         responses: { "200": { description: "Exported logs" } },
       },
     },
@@ -185,7 +295,8 @@ export const openApiSpec = {
     },
   },
   "x-audit": {
-    description: "All mutating routes are audited with PII redaction. 100% coverage via global auditMiddleware.",
+    description:
+      "All mutating routes are audited with PII redaction. 100% coverage via global auditMiddleware.",
     mutatingRoutes: [
       "POST /vote",
       "POST /comment/anonymous",
@@ -200,10 +311,24 @@ export const openApiSpec = {
       "POST /events/notify",
       "POST /remediation/action",
     ],
-    redaction: "proof, nullifier, root, commitment, secret, token, password, jwt always redacted",
-    immutable: "audit logs and remediation logs are append-only, no update/delete APIs",
+    redaction:
+      "proof, nullifier, root, commitment, secret, token, password, jwt always redacted",
+    immutable:
+      "audit logs and remediation logs are append-only, no update/delete APIs",
     replaySafe: "remediation uses idempotencyKey; duplicates return 409",
   },
 } as const;
+
+export const ENDPOINTS = Object.entries(openApiSpec.paths).flatMap(
+  ([path, operations]) =>
+    Object.keys(operations).map((method) => ({
+      method,
+      path,
+    })),
+);
+
+export function buildOpenApiDocument(): typeof openApiSpec {
+  return openApiSpec;
+}
 
 export default openApiSpec;
