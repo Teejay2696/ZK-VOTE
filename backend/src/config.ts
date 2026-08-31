@@ -279,6 +279,24 @@ const envSchema = z.object({
   DB_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(50),
   DB_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2000),
 
+  // Submit Queue (for bounded concurrency and backpressure)
+  SUBMIT_QUEUE_MAX_DEPTH: z.coerce.number().int().positive().default(100),
+  SUBMIT_QUEUE_ITEM_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120000), // 2 minutes
+
+  // RPC Concurrency Limits
+  RPC_MAX_CONCURRENT_REQUESTS: z.coerce.number().int().positive().default(10),
+
+  // Cache TTLs (for memory bounding)
+  NULLIFIER_CACHE_TTL_MS: z.coerce.number().int().positive().default(600000), // 10 minutes
+  PROOF_CACHE_TTL_MS: z.coerce.number().int().positive().default(600000), // 10 minutes
+  MEMBERSHIP_CACHE_TTL_MS: z.coerce.number().int().positive().default(300000), // 5 minutes
+  NULLIFIER_CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(10000),
+  PROOF_CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(5000),
+
   MAX_SEQUENCE_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(1),
   VOTE_SUBMISSION_PENDING_TTL_MS: z.coerce
     .number()
@@ -517,6 +535,20 @@ export const config = {
   dbRetryCount: validatedEnv.DB_RETRY_COUNT,
   dbRetryBaseDelayMs: validatedEnv.DB_RETRY_BASE_DELAY_MS,
   dbRetryMaxDelayMs: validatedEnv.DB_RETRY_MAX_DELAY_MS,
+
+  // Submit Queue
+  submitQueueMaxDepth: validatedEnv.SUBMIT_QUEUE_MAX_DEPTH,
+  submitQueueItemTimeoutMs: validatedEnv.SUBMIT_QUEUE_ITEM_TIMEOUT_MS,
+
+  // RPC Concurrency
+  rpcMaxConcurrentRequests: validatedEnv.RPC_MAX_CONCURRENT_REQUESTS,
+
+  // Cache TTLs
+  nullifierCacheTtlMs: validatedEnv.NULLIFIER_CACHE_TTL_MS,
+  proofCacheTtlMs: validatedEnv.PROOF_CACHE_TTL_MS,
+  membershipCacheTtlMs: validatedEnv.MEMBERSHIP_CACHE_TTL_MS,
+  nullifierCacheMaxEntries: validatedEnv.NULLIFIER_CACHE_MAX_ENTRIES,
+  proofCacheMaxEntries: validatedEnv.PROOF_CACHE_MAX_ENTRIES,
 
   // Sequence manager
   maxSequenceRetryAttempts: validatedEnv.MAX_SEQUENCE_RETRY_ATTEMPTS,

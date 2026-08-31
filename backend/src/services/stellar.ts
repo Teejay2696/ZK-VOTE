@@ -32,6 +32,7 @@ import {
   acquireClusterSequenceLock,
   releaseClusterSequenceLock,
 } from "./cluster.js";
+import { withRpcConcurrency } from "./rpc-concurrency.js";
 
 // ============================================
 // TYPE DEFINITIONS
@@ -444,7 +445,7 @@ export const server: SorobanServer = config.testMode
             const start = process.hrtime.bigint();
             try {
               const result = await sorobanRpcBreaker.execute(() =>
-                value.apply(activeServer, args),
+                withRpcConcurrency(() => value.apply(activeServer, args)),
               );
               const duration = Number(process.hrtime.bigint() - start) / 1e9;
               rpcCallsTotal.inc({ method, status: "success" });
