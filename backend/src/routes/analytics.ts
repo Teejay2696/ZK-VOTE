@@ -1,215 +1,188 @@
 /**
- * Governance Analytics API (#322)
+ * Privacy-Preserving Analytics Routes (issue #306)
  *
- * `/api/v1/analytics` — turnout and participation as a first-class API rather
- * than something every client re-derives from the raw event feed.
+ * Exposes homomorphic tally aggregation with threshold-decrypt-of-aggregate-only
+ * semantics and a per-DAO privacy budget:
  *
- * Authorization is split by blast radius. Per-DAO aggregates describe public
- * governance activity and are readable without a token (rate limited, like the
- * other read endpoints). Cross-DAO totals and the CSV export are operator
- * surfaces — they enumerate the whole platform in one response — so they sit
- * behind `authGuard`.
- *
- * Every handler delegates its arithmetic to `services/analytics.ts`, which
- * aggregates in SQL. No route reduces rows in memory.
+ *   POST  /analytics/init            Initialize an analytics aggregate for a DAO.
+ *   POST  /analytics/accumulate      Fold one encrypted participation contribution
+ *                                    into the DAO aggregate (homomorphic addition).
+ *   GET   /analytics/state/:daoId    View encrypted aggregate + cohort size (never
+ *                                    decrypts per-voter data).
+ *   GET   /analytics/budget/:daoId   View the DAO's privacy budget accounting.
+ *   POST  /analytics/decrypt         Threshold-decrypt the aggregate only, subject
+ *                                    to threshold / k-anonymity / budget guards.
+ *   POST  /analytics/budget/reset    Reset the DAO's privacy budget window (admin).
  */
 
 import { Router, type Request, type Response } from "express";
-import { z } from "zod";
 
-import {
-  getDaoOverview,
-  getParticipationTimeseries,
-  getPlatformOverview,
-  getProposalTurnout,
-  logAnalyticsQuery,
-  turnoutToCsv,
-} from "../services/analytics.js";
-import { authGuard, queryLimiter, validateParams, validateQuery } from "../middleware/index.js";
 import { log } from "../services/logger.js";
+import { authGuard, auditLog, bodyLimit } from "../middleware/index.js";
 import type { AsyncHandler } from "../types/index.js";
+import * as analytics from "../services/privacy-analytics.js";
 
 const router = Router();
 
 /**
- * `validateParams` / `validateQuery` publish their coerced output on the
- * request rather than mutating `req.params` / `req.query`, which are getters
- * under Express 5. These read the validated copies.
+ * POST /analytics/init
+ * Initialize an encrypted analytics aggregate for a DAO under a DKG joint key.
  */
-function validatedParams<T>(req: Request): T {
-  return (req as Request & { validatedParams: T }).validatedParams;
-}
-
-function validatedQuery<T>(req: Request): T {
-  return (req as Request & { validatedQuery?: T }).validatedQuery ?? ({} as T);
-}
-
-const BASE = "/api/v1/analytics";
-
-// ============================================
-// SCHEMAS
-// ============================================
-
-const daoIdParams = z.object({
-  daoId: z.coerce.number().int().nonnegative(),
-});
-
-const paginationQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  offset: z.coerce.number().int().min(0).optional(),
-  proposalId: z.coerce.number().int().nonnegative().optional(),
-});
-
-/** ISO-8601 instants only — the SQL comparison is lexicographic on the stored ISO string. */
-const isoDate = z
-  .string()
-  .datetime({ offset: true })
-  .or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD"));
-
-const participationQuery = z
-  .object({
-    interval: z.enum(["hour", "day", "week", "month"]).optional(),
-    from: isoDate.optional(),
-    to: isoDate.optional(),
-    limit: z.coerce.number().int().min(1).max(1000).optional(),
-  })
-  .refine(
-    (value) => !value.from || !value.to || value.from < value.to,
-    { message: "`from` must be earlier than `to`", path: ["from"] },
-  );
-
-// ============================================
-// HELPERS
-// ============================================
-
-/**
- * Run an analytics handler, timing it and mapping failures to a 500.
- *
- * Analytics is a read-only reporting surface: a malformed partition or a
- * missing table must degrade this endpoint alone, never the relay.
- */
-async function serve<T>(
-  res: Response,
-  metric: string,
-  daoId: number | null,
-  produce: () => Promise<T>,
-  countRows: (result: T) => number,
-): Promise<Response> {
-  const startedAt = process.hrtime.bigint();
-  try {
-    const result = await produce();
-    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-    logAnalyticsQuery(metric, daoId, durationMs, countRows(result));
-    return res.json(result);
-  } catch (error) {
-    log("error", "analytics_query_failed", {
-      metric,
-      daoId,
-      error: (error as Error).message,
-    });
-    return res.status(500).json({ error: "Failed to compute analytics" });
-  }
-}
-
-// ============================================
-// ROUTES
-// ============================================
-
-/** Headline counters for one DAO. */
-router.get(
-  `${BASE}/daos/:daoId/overview`,
-  queryLimiter,
-  validateParams(daoIdParams),
-  (async (req: Request, res: Response) => {
-    const { daoId } = validatedParams<{ daoId: number }>(req);
-    return serve(res, "dao_overview", daoId, () => getDaoOverview(daoId), () => 1);
-  }) as AsyncHandler,
-);
-
-/** Per-proposal turnout, newest proposal first. */
-router.get(
-  `${BASE}/daos/:daoId/turnout`,
-  queryLimiter,
-  validateParams(daoIdParams),
-  validateQuery(paginationQuery),
-  (async (req: Request, res: Response) => {
-    const { daoId } = validatedParams<{ daoId: number }>(req);
-    const query = validatedQuery<z.infer<typeof paginationQuery>>(req);
-    return serve(
-      res,
-      "proposal_turnout",
-      daoId,
-      () => getProposalTurnout(daoId, query),
-      (result) => result.items.length,
-    );
-  }) as AsyncHandler,
-);
-
-/** Participation bucketed over time. */
-router.get(
-  `${BASE}/daos/:daoId/participation`,
-  queryLimiter,
-  validateParams(daoIdParams),
-  validateQuery(participationQuery),
-  (async (req: Request, res: Response) => {
-    const { daoId } = validatedParams<{ daoId: number }>(req);
-    const query = validatedQuery<z.infer<typeof participationQuery>>(req);
-    return serve(
-      res,
-      "participation",
-      daoId,
-      async () => ({
-        daoId,
-        interval: query.interval ?? "day",
-        buckets: await getParticipationTimeseries(daoId, query),
-      }),
-      (result) => result.buckets.length,
-    );
-  }) as AsyncHandler,
-);
-
-/**
- * Turnout as CSV.
- *
- * Operator-scoped: a CSV export is the shape most likely to be pulled in bulk
- * and archived, so it requires a token even though the same numbers are
- * readable page by page from the JSON endpoint.
- */
-router.get(
-  `${BASE}/daos/:daoId/turnout.csv`,
-  queryLimiter,
+router.post(
+  "/analytics/init",
+  bodyLimit("100kb"),
   authGuard,
-  validateParams(daoIdParams),
-  validateQuery(paginationQuery),
+  auditLog("analytics_init"),
   (async (req: Request, res: Response) => {
-    const { daoId } = validatedParams<{ daoId: number }>(req);
-    const query = validatedQuery<z.infer<typeof paginationQuery>>(req);
+    const { daoId, jointPublicKey, thresholdT, thresholdN, minCohort, epsilonPerQuery, epsilonBudget } =
+      req.body;
 
     try {
-      const page = await getProposalTurnout(daoId, query);
-      res.setHeader("Content-Type", "text/csv; charset=utf-8");
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="turnout-dao-${daoId}.csv"`,
-      );
-      return res.send(turnoutToCsv(page.items));
-    } catch (error) {
-      log("error", "analytics_csv_failed", {
-        daoId,
-        error: (error as Error).message,
+      const state = analytics.initializeAnalytics({
+        daoId: Number(daoId),
+        jointPublicKey: String(jointPublicKey),
+        thresholdT: Number(thresholdT),
+        thresholdN: Number(thresholdN),
+        minCohort: minCohort != null ? Number(minCohort) : undefined,
+        epsilonPerQuery: epsilonPerQuery != null ? Number(epsilonPerQuery) : undefined,
+        epsilonBudget: epsilonBudget != null ? Number(epsilonBudget) : undefined,
       });
-      return res.status(500).json({ error: "Failed to export turnout" });
+
+      res.json({ success: true, state });
+    } catch (err) {
+      log("error", "analytics_init_failed", {
+        error: (err as Error).message,
+        daoId,
+      });
+      res.status(400).json({ error: (err as Error).message });
     }
   }) as AsyncHandler,
 );
 
-/** Platform-wide totals across every DAO partition. */
-router.get(
-  `${BASE}/platform/overview`,
-  queryLimiter,
+/**
+ * POST /analytics/accumulate
+ * Fold one encrypted participation contribution into the DAO aggregate.
+ * Expected body: { daoId, c1, c2 } where (c1, c2) is an ElGamal ciphertext of 1.
+ */
+router.post(
+  "/analytics/accumulate",
+  bodyLimit("10kb"),
   authGuard,
-  (async (_req: Request, res: Response) =>
-    serve(res, "platform_overview", null, () => getPlatformOverview(), () => 1)) as AsyncHandler,
+  auditLog("analytics_accumulate"),
+  (async (req: Request, res: Response) => {
+    const { daoId, c1, c2 } = req.body;
+
+    try {
+      if (!c1 || !c2 || typeof c1 !== "string" || typeof c2 !== "string") {
+        return res.status(400).json({ error: "c1 and c2 ciphertext strings are required" });
+      }
+      const state = analytics.accumulateContribution(Number(daoId), { c1, c2 });
+      res.json({ success: true, state });
+    } catch (err) {
+      log("error", "analytics_accumulate_failed", {
+        error: (err as Error).message,
+        daoId,
+      });
+      res.status(400).json({ error: (err as Error).message });
+    }
+  }) as AsyncHandler,
 );
+
+/**
+ * GET /analytics/state/:daoId
+ * View the encrypted aggregate + cohort size. Never reveals per-voter values.
+ */
+router.get("/analytics/state/:daoId", (async (req: Request, res: Response) => {
+  const { daoId } = req.params;
+  try {
+    const state = analytics.getState(Number(daoId));
+    res.json({ success: true, state });
+  } catch (err) {
+    res.status(404).json({ error: (err as Error).message });
+  }
+}) as AsyncHandler);
+
+/**
+ * GET /analytics/budget/:daoId
+ * View the DAO's privacy budget accounting.
+ */
+router.get("/analytics/budget/:daoId", (async (req: Request, res: Response) => {
+  const { daoId } = req.params;
+  try {
+    const budget = analytics.getPrivacyBudget(Number(daoId));
+    res.json({ success: true, budget });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+}) as AsyncHandler);
+
+/**
+ * POST /analytics/decrypt
+ * Threshold-decrypt the aggregate only. Body: { daoId, shares: [{ authorityIndex, shareHex }] }
+ */
+router.post(
+  "/analytics/decrypt",
+  bodyLimit("100kb"),
+  authGuard,
+  auditLog("analytics_decrypt"),
+  (async (req: Request, res: Response) => {
+    const { daoId, shares } = req.body;
+
+    try {
+      if (!Array.isArray(shares) || shares.length === 0) {
+        return res.status(400).json({ error: "shares array is required" });
+      }
+      const result = analytics.thresholdDecryptAggregate(Number(daoId), shares);
+      res.json({ success: true, result });
+    } catch (err) {
+      log("error", "analytics_decrypt_failed", {
+        error: (err as Error).message,
+        daoId,
+      });
+      res.status(400).json({ error: (err as Error).message });
+    }
+  }) as AsyncHandler,
+);
+
+/**
+ * POST /analytics/budget/reset
+ * Reset the DAO's privacy budget window (admin).
+ */
+router.post(
+  "/analytics/budget/reset",
+  bodyLimit("1kb"),
+  authGuard,
+  auditLog("analytics_budget_reset"),
+  (async (req: Request, res: Response) => {
+    const { daoId, epsilonBudget } = req.body;
+    try {
+      const budget = analytics.resetPrivacyBudget(
+        Number(daoId),
+        epsilonBudget != null ? Number(epsilonBudget) : undefined,
+      );
+      res.json({ success: true, budget });
+    } catch (err) {
+      log("error", "analytics_budget_reset_failed", {
+        error: (err as Error).message,
+        daoId,
+      });
+      res.status(400).json({ error: (err as Error).message });
+    }
+  }) as AsyncHandler,
+);
+
+/**
+ * GET /analytics/status — overview of the analytics subsystem.
+ */
+router.get("/analytics/status", (async (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    feature: "privacy-preserving-analytics",
+    curve: "BN254",
+    semantics: "homomorphic-elgamal",
+    decryptScope: "aggregate-only",
+    issue: 306,
+  });
+}) as AsyncHandler);
 
 export default router;

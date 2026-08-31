@@ -93,10 +93,7 @@ import {
   initIndexerRoutes,
   bridgeRoutes,
   circuitRoutes,
-  novaRoutes,
-  metricsRoutes,
-  remediationRoutes,
-  registerShutdownHandler,
+  analyticsRoutes,
 } from "./routes/index.js";
 import metricsRoutes from "./routes/metrics.js";
 import remediationRoutes from "./routes/remediation.js";
@@ -265,7 +262,7 @@ app.use(claimRoutes);
 app.use(indexerRoutes);
 app.use(bridgeRoutes);
 app.use(circuitRoutes);
-app.use("/api/v1/nova", novaRoutes);
+app.use(analyticsRoutes);
 
 // Global error handler (must be last)
 app.use(errorHandler);
@@ -334,12 +331,16 @@ async function gracefulShutdown(reason: string): Promise<void> {
 
   await httpClosed;
 
-  const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS).then(
-    () => true,
-    () => false,
-  );
+  // Wait for any in-flight sequence-locked chain submissions to drain.
+  // Returns false on timeout with work still outstanding.
+  const drained = await waitForSequenceLockIdle(DRAIN_TIMEOUT_MS);
 
   clearTimeout(forceExitTimer);
+  if (!drained) {
+    log("error", "shutdown_drain_timeout", {
+      pendingSequenceLockOps: getPendingSequenceLockOps(),
+    });
+  }
   log("info", "shutdown_complete", {
     reason,
     cleanDrain: drained,
