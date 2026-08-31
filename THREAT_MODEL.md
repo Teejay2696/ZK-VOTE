@@ -361,3 +361,62 @@ larger change with its own migration and abuse-prevention design (e.g.
 preventing a single eligible voter from requesting many blind signatures)
 and is intentionally out of scope for this PR — see the PR description for
 the full list of deferred acceptance criteria.
+
+## Circuit-Registry Governed VK Upgrade with Timelock + Multi-Sig (Issue #297)
+
+**Threat**: DAO admin VK trust is a documented risk. A single admin key can
+rotate the verification key at will, potentially replacing it with a malicious
+VK that allows forged proofs or invalidates ongoing elections without notice.
+
+**Mitigation — Timelocked VK Proposals with Multi-Sig Quorum**:
+The `circuit-registry` contract now enforces a two-phase VK upgrade process
+that limits rogue VK swaps:
+
+1. **Proposal Phase**: Any authorized proposer (configurable per DAO) creates a
+   VK upgrade proposal specifying the new VK, new WASM hash, timelock duration,
+   and required approval quorum. The proposal is stored on-chain with status
+   `Pending`.
+
+2. **Approval Phase**: Multiple independent approvers (multi-sig) must each
+   submit `approve_vk_upgrade` transactions. The contract tracks approval
+   count. The proposal only becomes executable once `approvals >=
+   required_approvals`.
+
+3. **Timelock Phase**: After quorum is met, the proposal enters a mandatory
+   timelock period (`execute_after`). During this period, the proposal can be
+   cancelled by the proposer or governance. The timelock provides a safety
+   window for DAO members to review the change and for off-chain coordination.
+
+4. **Execution Phase**: After the timelock elapses and quorum is met, any
+   authorized executor can call `execute_vk_upgrade`. This atomically updates
+   the circuit's VK, WASM hash, and `registered_at` timestamp, and emits
+   `VkProposalExecutedEvent`.
+
+5. **Versioned VK History**: The voting contract maintains `VkByVersion`
+   mappings, preserving historical VKs. Proposals snapshotted before the
+   upgrade continue to verify against their pinned VK version, preventing
+   in-flight votes from being invalidated.
+
+6. **Stale Rejection**: The backend and frontend reject stale VK versions
+   (ZK-013), ensuring clients cannot accidentally use deprecated verification
+   keys.
+
+**Properties**:
+- No single admin can unilaterally rotate the VK.
+- DAO members have a timelock window to detect and respond to malicious
+  proposals.
+- Versioned VK storage ensures ongoing elections are not disrupted by
+  post-creation VK changes.
+- Frontend `CircuitUpgradePanel` displays pending VK proposals with timelock
+  countdown and approval progress.
+
+**Code alignment**:
+- `contracts/circuit-registry/src/lib.rs`: `propose_vk_upgrade`,
+  `approve_vk_upgrade`, `execute_vk_upgrade`, `cancel_vk_upgrade`,
+  `get_vk_proposal`, `get_dao_vk_proposal`, `VkProposal`/`VkProposalStatus`
+  types, and associated events.
+- `contracts/voting/src/lib.rs`: `get_pending_vk_proposal`,
+  `is_vk_proposal_ready`, `DaoVkProposal` storage key, `VkProposalStatus`
+  enum.
+- `backend/src/routes/circuits.ts`: REST endpoints for proposal lifecycle.
+- `frontend/src/components/CircuitUpgradePanel.tsx`: UI for pending proposals.
