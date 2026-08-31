@@ -235,6 +235,7 @@ export interface paths {
               b: string;
               c: string;
             };
+            publicSignals: components["schemas"]["PublicSignals"];
           };
         };
       };

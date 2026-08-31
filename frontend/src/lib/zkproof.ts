@@ -923,3 +923,16 @@ export async function verifyProofWithVersionedVK(
     return false;
   }
 }
+
+// STARK Prover Stub
+export async function generateStarkProof(signals: any) {
+    // Prototype: Plonky2 based WASM prover logic goes here
+    return {
+        starkProof: {
+            proof_bytes: new Uint8Array(64),
+            public_inputs: new Uint8Array(32),
+        },
+        hybridCommitment: 'dummy-sha3-hash'
+    };
+}
+

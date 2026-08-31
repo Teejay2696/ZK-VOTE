@@ -21,7 +21,7 @@ export const openApiSpec = {
     schemas: {
       VoteRequest: {
         type: "object",
-        required: ["daoId", "proposalId", "choice", "nullifier", "root", "proof"],
+        required: ["daoId", "proposalId", "choice", "nullifier", "root", "proof", "publicSignals"],
         properties: {
           daoId: { type: "integer" },
           proposalId: { type: "integer" },
@@ -29,7 +29,20 @@ export const openApiSpec = {
           nullifier: { type: "string", description: "BN254 field element hex < modulus (redacted in audit)" },
           root: { type: "string", description: "Merkle root hex (redacted in audit)" },
           proof: { type: "object", description: "Groth16 proof (redacted in audit)", properties: { a: { type: "string" }, b: { type: "string" }, c: { type: "string" } } },
+          publicSignals: { $ref: "#/components/schemas/PublicSignals" },
         },
+      },
+      PublicSignals: {
+        type: "object",
+        required: ["root", "nullifier", "daoId", "proposalId", "voteChoice", "numCandidates"],
+        properties: {
+          root: { type: "string" },
+          nullifier: { type: "string" },
+          daoId: { type: "string" },
+          proposalId: { type: "string" },
+          voteChoice: { type: "string" },
+          numCandidates: { type: "string" },
+        }
       },
       AuditEntry: {
         type: "object",

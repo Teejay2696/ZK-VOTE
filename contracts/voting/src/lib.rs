@@ -31,6 +31,7 @@
 
 mod storage;
 use soroban_sdk::xdr::ToXdr;
+mod stark_verifier;
 #[allow(unused_imports)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype,

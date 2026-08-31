@@ -24,8 +24,8 @@ export const BN254_FR_MODULUS_HEX =
  * Circuit constants
  */
 export const TREE_DEPTH = 18;
-export const NUM_PUBLIC_SIGNALS = 5;
-export const VK_IC_LENGTH = NUM_PUBLIC_SIGNALS + 1; // 6 elements
+export const NUM_PUBLIC_SIGNALS = 6;
+export const VK_IC_LENGTH = NUM_PUBLIC_SIGNALS + 1; // 7 elements
 
 // ============================================
 // PROOF TYPES
