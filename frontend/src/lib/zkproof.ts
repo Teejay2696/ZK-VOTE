@@ -179,6 +179,19 @@ export interface ClaimProofInput {
 // Distinct arity (4 vs 3) ensures vote and claim nullifiers never collide.
 export const CLAIM_TAG = "427020085613";
 
+export interface TallyProofInput {
+  daoId: string;
+  proposalId: string;
+  root: string;
+  tallyYes: string;
+  tallyNo: string;
+  nullifiers: string[];
+  voteChoices: string[];
+  weights?: string[];
+  pathElements: string[][];
+  pathIndices: number[][];
+}
+
 export interface GeneratedProof {
   proof: Groth16Proof;
   publicSignals: string[];
@@ -546,6 +559,51 @@ export async function generateWeightedVoteProof(
   } catch (error) {
     console.error("Failed to generate weighted vote proof:", error);
     throw new Error(`Weighted proof failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+  }
+}
+
+/**
+ * Generate a Groth16 tally proof for a proposal.
+ * The circuit proves the reported tallies are the sum of valid, unique votes
+ * in the nullifier set (bound to `root`).
+ */
+export async function generateTallyProof(
+  input: TallyProofInput,
+  wasmPath: string | Uint8Array = "/circuits/tally/tally.wasm",
+  zkeyPath: string | Uint8Array = "/circuits/tally/tally_final.zkey",
+): Promise<GeneratedProof> {
+  try {
+    const circuitInput: Record<string, unknown> = {
+      daoId: input.daoId,
+      proposalId: input.proposalId,
+      root: input.root,
+      tallyYes: input.tallyYes,
+      tallyNo: input.tallyNo,
+      nullifiers: input.nullifiers,
+      voteChoices: input.voteChoices,
+      pathElements: input.pathElements,
+      pathIndices: input.pathIndices,
+    };
+    if (input.weights) circuitInput.voteWeights = input.weights;
+
+    if (USE_RUST_PROVER) {
+      try {
+        return await proveWithRust(circuitInput, wasmPath, zkeyPath);
+      } catch (e) {
+        console.warn("Rust tally prover failed; falling back to snarkjs.", e);
+      }
+    }
+
+    const { groth16 } = await import("snarkjs");
+    const { proof, publicSignals } = await groth16.fullProve(
+      circuitInput,
+      wasmPath,
+      zkeyPath,
+    );
+    return { proof, publicSignals };
+  } catch (error) {
+    console.error("Failed to generate tally proof:", error);
+    throw new Error(`Tally proof generation failed: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }
 
