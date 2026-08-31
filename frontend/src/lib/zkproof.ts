@@ -197,6 +197,43 @@ export interface GeneratedProof {
   publicSignals: string[];
 }
 
+/**
+ * Generate a Snark proof for a final tally.
+ *
+ * The circuit proves that `tallyYes` and `tallyNo` are the correct sums of
+ * all valid votes that were cast for a proposal. The proof is verified
+ * on-chain by the `verify_tally_proof` entrypoint.
+ *
+ * @param input - All tally inputs (root, nullifiers, vote choices, weights,
+ *                merkle paths).
+ * @param wasmPath - Path to the compiled tally circuit WASM (or a Uint8Array
+ *                   containing the WASM bytes).
+ * @param zkeyPath - Path to the tally circuit final zkey (or a Uint8Array
+ *                   containing the zkey bytes).
+ * @returns The generated Groth16 proof and public signals.
+ */
+export async function generateTallyProof(
+  input: TallyProofInput,
+  wasmPath: string | Uint8Array,
+  zkeyPath: string | Uint8Array,
+): Promise<GeneratedProof> {
+  // Normalize input for the circuit.
+  const circuitInput = {
+    root: input.root,
+    daoId: input.daoId,
+    proposalId: input.proposalId,
+    tallyYes: input.tallyYes,
+    tallyNo: input.tallyNo,
+    nullifiers: input.nullifiers,
+    voteChoices: input.voteChoices,
+    weights: input.weights ?? input.voteChoices.map(() => "1"),
+    pathElements: input.pathElements,
+    pathIndices: input.pathIndices,
+  } as unknown as Record<string, unknown>;
+
+  return proveWithRust(circuitInput, wasmPath, zkeyPath);
+}
+
 // ============================================
 // Versioned VK Cache (Task 1: ZK-013)
 // ============================================
