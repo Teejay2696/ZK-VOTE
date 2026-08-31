@@ -285,6 +285,7 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(300000),
+  VOTE_QUEUE_MAX_DEPTH: z.coerce.number().int().positive().default(100),
 
   RELAYER_TEST_MODE: z
     .enum(["true", "false"])
@@ -523,6 +524,7 @@ export const config = {
 
   // Vote submission idempotency
   voteSubmissionPendingTtlMs: validatedEnv.VOTE_SUBMISSION_PENDING_TTL_MS,
+  voteQueueMaxDepth: validatedEnv.VOTE_QUEUE_MAX_DEPTH,
 
   // Test mode
   testMode: validatedEnv.RELAYER_TEST_MODE,
@@ -604,24 +606,41 @@ export function validateEnv(): void {
     );
   }
 
-  const criticalKeys = ["VOTING_CONTRACT_ID", "TREE_CONTRACT_ID", "RELAYER_SECRET_KEY", "RELAYER_AUTH_TOKEN"];
+  const criticalKeys = [
+    "VOTING_CONTRACT_ID",
+    "TREE_CONTRACT_ID",
+    "RELAYER_SECRET_KEY",
+    "RELAYER_AUTH_TOKEN",
+  ];
   const criticalMissing = missing.filter((k) => criticalKeys.includes(k));
   const nonCriticalMissing = missing.filter((k) => !criticalKeys.includes(k));
 
   if (criticalMissing.length > 0) {
     console.error(
-      JSON.stringify({ level: "error", event: "missing_env", missing: criticalMissing }),
+      JSON.stringify({
+        level: "error",
+        event: "missing_env",
+        missing: criticalMissing,
+      }),
     );
   }
 
   if (nonCriticalMissing.length > 0) {
     if (config.testMode) {
       console.warn(
-        JSON.stringify({ level: "warn", event: "missing_optional_env_in_test_mode", missing: nonCriticalMissing }),
+        JSON.stringify({
+          level: "warn",
+          event: "missing_optional_env_in_test_mode",
+          missing: nonCriticalMissing,
+        }),
       );
     } else {
       console.error(
-        JSON.stringify({ level: "error", event: "missing_env", missing: nonCriticalMissing }),
+        JSON.stringify({
+          level: "error",
+          event: "missing_env",
+          missing: nonCriticalMissing,
+        }),
       );
       console.error("\nRun ./scripts/init-local.sh to generate backend/.env");
       process.exit(1);
@@ -677,7 +696,10 @@ export function validateEnv(): void {
     );
   }
 
-  if (config.commentsContractId && !isValidContractId(config.commentsContractId)) {
+  if (
+    config.commentsContractId &&
+    !isValidContractId(config.commentsContractId)
+  ) {
     console.error(
       JSON.stringify({
         level: "error",
