@@ -39,6 +39,15 @@ export interface RecursiveProofPayload {
   timestamp: number;
 }
 
+export interface TallyProofPayload {
+  nullifier_root: string;
+  yes_votes: number;
+  no_votes: number;
+  proof_a: string;
+  proof_b: string;
+  proof_c: string;
+}
+
 export class NovaAggregatorService {
   private tempDir: string;
 
@@ -49,9 +58,7 @@ export class NovaAggregatorService {
     }
   }
 
-  /**
-   * Aggregates a batch of vote witnesses off-chain into a single Nova recursive proof payload
-   */
+  /// Default aggregate Votes method
   async aggregateVotes(
     daoId: number,
     proposalId: number,
@@ -61,7 +68,7 @@ export class NovaAggregatorService {
     const timestamp = Date.now();
     const batchPath = path.join(
       this.tempDir,
-      `batch_${daoId}_${proposalId}_${timestamp}.json`,
+      ``batch_${daoId}_${proposalId}_${timestamp}.json`,
     );
     const outputPath = path.join(
       this.tempDir,
@@ -75,8 +82,8 @@ export class NovaAggregatorService {
       // 2. Invoke nova-aggregator CLI tool
       const cargoCmd = `cargo run -p nova-aggregator --bin nova-aggregator -- --batch "${batchPath}" --out "${outputPath}" --root "${root}" --benchmark`;
 
-      const { stdout, stderr } = await execAsync(cargoCmd, {
-        cwd: path.resolve(__dirname, "../../../"),
+      const { stdout, stderr } = await execCmd(cargoCmd, {
+        cwd: path.resolve(__dirname, "../../"),
       });
 
       console.info("[NovaService] Aggregation CLI output:", stdout);
@@ -94,6 +101,48 @@ export class NovaAggregatorService {
       return payload;
     } finally {
       // Cleanup transient files
+      if (fs.existsSync(batchPath)) fs.unlinkSync(batchPath);
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    }
+  }
+
+  /// Generate a tally proof for on-chain verification
+  async generateTallyProof(
+    doId: number,
+    proposalId: number,
+    root: string,
+    witnesses: VoteWitnessPayload[],
+  ): Promise<TallyProofPayload> {
+    const timestamp = Date.now();
+    const batchPath = path.join(
+      this.tempDir,
+      `tally_batch_${doId}_${proposalId}_${timestamp}.json`,
+    );
+    const outputPath = path.join(
+      this.tempDir,
+      `tally_proof_${doId}_${proposalId}_${timestamp}.json`,
+    );
+
+    try {
+      fs.writeFileSync(batchPath, JSON.stringify(witnesses, null, 2), "utf8");
+
+      const cargoCmd = `cargo run -p nova-aggregator --bin nova-aggregator -- --tally --batch "${batchPath}" --out "${outputPath}" --root "$root}"`;
+
+      const { stdout, stderr } = await execCmd(cargoCmd, {
+        cwd: path.resolve(__dirname, "../../"),
+      });
+
+      console.info("[NovaService] Tally proof CLI output:", stdout);
+
+      if (!fs.existsSync(outputPath)) {
+        throw new Error(
+          `Nova aggregator failed to create tally proof file: ${stderr}`,
+        );
+      }
+
+      const proofRaw = fs.readFileSync(outputPath, "utf8");
+      return JSON.parse(proofRaw) as TallyProofPayload;
+    } finally {
       if (fs.existsSync(batchPath)) fs.unlinkSync(batchPath);
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
     }
