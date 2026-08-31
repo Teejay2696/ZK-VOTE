@@ -290,6 +290,25 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+
+  DECENTRALIZED_RELAY_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  MPC_QUORUM_SIZE: z.coerce.number().int().positive().default(3),
+  MPC_RELAY_NODE_URLS: z.string().optional(),
+  COVER_TRAFFIC_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  COVER_TRAFFIC_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  COVER_TRAFFIC_BATCH_SIZE: z.coerce.number().int().positive().default(10),
+  MISSING_VOTE_MONITOR_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
+  MISSING_VOTE_MONITOR_THRESHOLD: z.coerce.number().int().positive().default(3),
+  ANONYMOUS_SUBMISSION_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v !== "false"),
 });
 
 type EnvConfig = z.infer<typeof envSchema>;
@@ -381,6 +400,21 @@ export const config = {
   // Authentication (read from env as fallback; see getSecret() for dynamic retrieval)
   relayerAuthToken: validatedEnv.RELAYER_AUTH_TOKEN,
   relayerSecretKey: validatedEnv.RELAYER_SECRET_KEY,
+
+  // Decentralized relay network (MPC submitter + cover traffic)
+  decentralizedRelayEnabled: validatedEnv.DECENTRALIZED_RELAY_ENABLED,
+  mpcQuorumSize: validatedEnv.MPC_QUORUM_SIZE,
+  mpcRelayNodeUrls: validatedEnv.MPC_RELAY_NODE_URLS
+    ? validatedEnv.MPC_RELAY_NODE_URLS.split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [],
+  coverTrafficEnabled: validatedEnv.COVER_TRAFFIC_ENABLED,
+  coverTrafficIntervalMs: validatedEnv.COVER_TRAFFIC_INTERVAL_MS,
+  coverTrafficBatchSize: validatedEnv.COVER_TRAFFIC_BATCH_SIZE,
+  missingVoteMonitorIntervalMs: validatedEnv.MISSING_VOTE_MONITOR_INTERVAL_MS,
+  missingVoteMonitorThreshold: validatedEnv.MISSING_VOTE_MONITOR_THRESHOLD,
+  anonymousSubmissionEnabled: validatedEnv.ANONYMOUS_SUBMISSION_ENABLED,
 
   // Master key for token management endpoints (REQUIRED - must be at least 32 chars)
   authMasterKey: validatedEnv.AUTH_MASTER_KEY,
