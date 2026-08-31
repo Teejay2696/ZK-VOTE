@@ -899,6 +899,10 @@ router.post(
         valid,
         daoId,
         proposalId,
+        root,
+        yesVotes,
+        noVotes,
+        proof,
       });
     } catch (err) {
       if (err instanceof ApiError) return next(err);
