@@ -110,11 +110,20 @@ const positiveInteger = z.string().pipe(
  */
 const ipfsCid = z.string().refine(
   (val) => {
-    // CIDv0: Qm... (46 chars)
-    if (val.startsWith("Qm") && val.length >= 46) return true;
-    // CIDv1: bafy... or bafk... (59+ chars)
-    if ((val.startsWith("bafy") || val.startsWith("bafk")) && val.length >= 59)
-      return true;
+    // CIDv0: Qm... (46+ chars, base58-encoded)
+    if (val.startsWith("Qm")) {
+      if (val.length < 46) return false;
+      // Qm prefix uses base58 encoding
+      const base58Chars = /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/;
+      return base58Chars.test(val);
+    }
+    // CIDv1: multi-base encoded (prefix determines encoding)
+    if (val.startsWith("bafy") || val.startsWith("bafk")) {
+      if (val.length < 59) return false;
+      // bafy/bafk use base32 encoding (multibase 'f')
+      const base32Chars = /^[a-z2-7]+$/;
+      return base32Chars.test(val);
+    }
     return false;
   },
   { message: "Invalid IPFS CID format" },
