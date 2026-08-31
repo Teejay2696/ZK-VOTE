@@ -18,13 +18,8 @@ default-members = [
     "contracts/membership-tree",
     "contracts/voting",
     "contracts/comments",
-    "contracts/poc-bls12-381",
     "contracts/bridge/soroban",
     "contracts/circuit-registry",
-    "contracts/token",
-    "contracts/vdf",
-    "contracts/threshold-crypto",
-    "contracts/rewards",
 ]
 resolver = "2"
 
