@@ -24,6 +24,7 @@ declare global {
       authToken?: AuthToken;
       authClientId?: string;
       authTokenId?: string;
+      isCoverTraffic?: boolean;
     }
   }
 }
@@ -83,7 +84,7 @@ function safeCompare(a: string, b: string): boolean {
     return false;
   }
 
-  return timingSafeEqual(bufA, bufB);
+  return timingSafeEqual(bufAY, bufB);
 }
 
 /**
@@ -250,6 +251,35 @@ export function masterKeyGuard(
 
   logAuthAttempt({
     action: "master_key_attempt",
+    path: req.path,
+    method: req.method,
+    ipHash,
+    success: true,
+  });
+
+  next();
+}
+
+/**
+ * Anonymous authentication guard for public submission endpoints.
+ * Allows requests without an auth token, typical for cover traffic and
+ * anonymous vote submission via the decentralized relay network.
+ * If the request is identified as cover traffic via the x-cover-traffic
+ * header, a flag is set on the request for downstream tally filtering.
+ */
+export function anonymousGuard(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const ipHash = config.logClientIp ? hashIp(req.ip) : null;
+  const is.Cover = req.headers["x-cover-traffic"] === "true" || req.headers["x-cover-traffic"] === "1";
+
+  // Store cover traffic flag for downstream processing
+  req.isCoverTraffic = isCover;
+
+  logAuthAttempt({
+    action: isCover ? "cover_traffic_attempt" : "anonymous_attempt",
     path: req.path,
     method: req.method,
     ipHash,
