@@ -13,7 +13,9 @@
  * - Trace ID correlation across all log entries
  * - Supports PII redaction via the enhanced logger
  * Provides request context and structured logging for all requests.
- * Supports PII redaction via the enhanced logger.
+ * Supports PII redaction via the enhanced logger and correlation ID
+ * propagation via AsyncLocalStorage so every downstream log call from
+ * services/routes automatically carries the request's correlation + trace ID.
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -24,15 +26,20 @@ declare global {
     interface Request {
       ctx?: string;
       traceId?: string;
+      spanId?: string;
     }
   }
 }
 import crypto from "crypto";
 // import { config } from "../config.js"; // Unused - kept for reference
 import { log, hashIp, getRedactionPolicy } from "../services/logger.js";
-
-const TRACEPARENT_RE =
-  /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/i;
+import {
+  createSpanContext,
+  formatTraceparent,
+  parseTraceparent,
+  runWithSpanContext,
+  type SpanContext,
+} from "../services/tracing.js";
 
 /**
  * Parses an inbound W3C `traceparent` header (version-traceid-parentid-flags,
@@ -42,13 +49,7 @@ const TRACEPARENT_RE =
 export function parseIncomingTraceId(
   header: string | undefined,
 ): string | undefined {
-  if (!header) return undefined;
-  const match = TRACEPARENT_RE.exec(header.trim());
-  if (!match) return undefined;
-  const traceId = match[2];
-  // An all-zero trace ID is explicitly invalid per the spec.
-  if (/^0+$/.test(traceId)) return undefined;
-  return traceId;
+  return parseTraceparent(header)?.traceId;
 }
 
 // ============================================
@@ -384,11 +385,12 @@ export function requestLogger(
       sampleReason: reason,
       sampleRate: rate,
       path: req.path,
-      status: res.statusCode,
+      method: req.method,
+      ...ipMeta,
+      ...bodyMeta,
     });
-  });
 
-  next();
+  runWithSpanContext(spanContext, next);
 }
 
 /**
@@ -422,13 +424,11 @@ export function errorLogger(
   res: Response,
   next: NextFunction,
 ): void {
-  const ctx = req.ctx || "unknown";
   const isProduction = process.env.NODE_ENV === "production";
 
-  // Log the error with redaction
+  // Log the error with redaction; correlation IDs are attached automatically
+  // via the active request context.
   log("error", "request_error", {
-    ctx,
-    traceId: req.traceId,
     path: req.path,
     method: req.method,
     error: err.message,
