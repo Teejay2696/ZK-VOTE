@@ -106,6 +106,10 @@ pub enum VotingError {
     TallyProofMissing = 30,
     /// Tally verification key has not been configured for this DAO
     TallyVkNotSet = 31,
+    /// Vote tally overflowed u64
+    TallyOverflow = 32,
+    /// Recursive tally proof inconsistent with on-chain nullifier set
+    RecursiveProofInvalid = 33,
 }
 
 // Maximum allowed IC vector length (num_public_inputs + 1)
@@ -240,6 +244,9 @@ pub enum DataKey {
     UpgradeMigration(u32),
     /// Rollback marker by rolled-back contract version.
     UpgradeRollback(u32),
+    /// On-chain nullifier accumulator for tally proof binding (#94).
+    /// Appended at end so existing storage discriminants stay stable.
+    NullifierAccumulator(u64, u64),
 }
 
 /// A single quadratic-voting ballot as stored on-chain.
@@ -1133,6 +1140,36 @@ impl Voting {
         proof.map(|proof| proof.to_xdr(&env))
     }
 
+    /// Return the current nullifier accumulator for an election.
+    pub fn get_nullifier_accumulator(env: Env, dao_id: u64, proposal_id: u64) -> U256 {
+        Self::bump_instance(&env);
+        env.storage()
+            .persistent()
+            .get(&DataKey::NullifierAccumulator(dao_id, proposal_id))
+            .unwrap_or(U256::from_u32(&env, 0))
+    }
+
+    /// Update the election nullifier accumulator with a newly used nullifier.
+    ///
+    /// The accumulator is SHA256(prev_acc || nullifier); the tally SNARK must
+    /// reproduce the same final value. This binds the tally proof to the
+    /// on-chain nullifier set (issue #94).
+    fn accumulate_nullifier(env: &Env, dao_id: u64, proposal_id: u64, nullifier: &U256) {
+        let key = DataKey::NullifierAccumulator(dao_id, proposal_id);
+        let current: U256 = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(U256::from_u32(env, 0));
+        let mut data = Bytes::new(env);
+        data.append(&Bytes::from_array(env, &current.to_bytes().to_array()));
+        data.append(&Bytes::from_array(env, &nullifier.to_bytes().to_array()));
+        let hash: BytesN<32> = env.crypto().sha256(&data).into();
+        let next = U256::from_bytes(env, &hash);
+        env.storage().persistent().set(&key, &next);
+        Self::bump_persistent(env, &key);
+    }
+
     /// Verify the tally SNARK proof for a finalized election.
     ///
     /// Recomputes the public signals from the on-chain proposal and recursive
@@ -1190,6 +1227,20 @@ impl Voting {
 
         if vk.ic.len() != TALLY_CIRCUIT_IC_LEN {
             return Err(VotingError::VkIcLengthMismatch);
+        }
+
+        Self::assert_in_field(env, final_nullifier_acc);
+
+        let acc_key = DataKey::NullifierAccumulator(dao_id, proposal_id);
+        let expected_acc: U256 = match env.storage().persistent().get(&acc_key) {
+            Some(acc) => {
+                Self::bump_persistent(env, &acc_key);
+                acc
+            }
+            None => U256::from_u32(env, 0),
+        };
+        if &expected_acc != final_nullifier_acc {
+            return Err(VotingError::TallyProofInvalid);
         }
 
         let dao_signal = U256::from_u128(env, dao_id as u128);
@@ -1882,6 +1933,10 @@ impl Voting {
             panic_with_error!(&env, VotingError::InvalidProof);
         }
 
+        // Bind this vote's nullifier into the election accumulator so the
+        // final tally proof can be verified against the on-chain nullifier set.
+        Self::accumulate_nullifier(&env, dao_id, proposal_id, &nullifier);
+
         // Update vote count with checked arithmetic
         if vote_choice {
             proposal.yes_votes = proposal
@@ -2211,6 +2266,7 @@ impl Voting {
         let scoped_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier);
         env.storage().persistent().set(&scoped_key, &true);
         Self::bump_persistent(&env, &scoped_key);
+        Self::accumulate_nullifier(&env, dao_id, proposal_id, &nullifier);
         env.storage().persistent().remove(&legacy_key);
         true
     }
